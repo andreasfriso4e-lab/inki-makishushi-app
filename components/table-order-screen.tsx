@@ -13,6 +13,7 @@ import {
 import { createPortal } from "react-dom";
 
 import { buildOrderRoute, getAppHomePath } from "@/lib/app-mode";
+import { FinalPaymentPanel } from "@/components/final-payment-panel";
 import { CompanyFormFields } from "@/components/company-form-fields";
 import { PalmareOrderScreen } from "@/components/palmare-order-screen";
 import { PokeConfigurator } from "@/components/poke-configurator";
@@ -1288,8 +1289,11 @@ export function TableOrderScreen({
   const getVisibleSentQuantity = (item: OrderItem) =>
     Math.min(item.sentQuantity ?? 0, item.quantity);
 
+  const getVisibleQueuedQuantity = (item: OrderItem) =>
+    Math.min(item.queuedQuantity ?? 0, item.quantity);
+
   const getPendingItemQuantity = (item: OrderItem) =>
-    Math.max(item.quantity - getVisibleSentQuantity(item), 0);
+    Math.max(item.quantity - Math.max(getVisibleSentQuantity(item), getVisibleQueuedQuantity(item)), 0);
 
   const isSentHistoryItem = (item: OrderItem) =>
     getVisibleSentQuantity(item) > 0 && getPendingItemQuantity(item) === 0;
@@ -1558,6 +1562,7 @@ export function TableOrderScreen({
               ...item,
               quantity: nextQuantity,
               sentQuantity: Math.min(item.sentQuantity ?? 0, nextQuantity),
+              queuedQuantity: Math.min(item.queuedQuantity ?? 0, nextQuantity),
               status:
                 nextQuantity > 0 && Math.min(item.sentQuantity ?? 0, nextQuantity) > 0
                   ? ("sent" as const)
@@ -1573,6 +1578,7 @@ export function TableOrderScreen({
               ...item,
               quantity: nextQuantity,
               sentQuantity: Math.min(item.sentQuantity ?? 0, nextQuantity),
+              queuedQuantity: Math.min(item.queuedQuantity ?? 0, nextQuantity),
               status:
                 nextQuantity > 0 && Math.min(item.sentQuantity ?? 0, nextQuantity) > 0
                   ? ("sent" as const)
@@ -1640,6 +1646,7 @@ export function TableOrderScreen({
                 ...entry,
                 quantity: nextQuantity,
                 sentQuantity: Math.min(entry.sentQuantity ?? 0, nextQuantity),
+                queuedQuantity: Math.min(entry.queuedQuantity ?? 0, nextQuantity),
               }
             : entry
         )
@@ -1863,6 +1870,7 @@ export function TableOrderScreen({
                 ...entry,
                 quantity: nextQuantity,
                 sentQuantity: Math.min(entry.sentQuantity ?? 0, nextQuantity),
+                queuedQuantity: Math.min(entry.queuedQuantity ?? 0, nextQuantity),
               }
             : entry
         )
@@ -3854,7 +3862,8 @@ export function TableOrderScreen({
       .filter((item) => item.productId !== AUTO_COVER_PRODUCT_ID)
       .forEach((item) => {
         const sentQuantity = item.sentQuantity ?? 0;
-        const pendingQuantity = Math.max(item.quantity - sentQuantity, 0);
+        const queuedQuantity = item.queuedQuantity ?? 0;
+        const pendingQuantity = Math.max(item.quantity - Math.max(sentQuantity, queuedQuantity), 0);
 
         if (pendingQuantity <= 0) {
           return;
@@ -3943,10 +3952,20 @@ export function TableOrderScreen({
       const successfulPrints = dispatchedJobs.filter(
         (job) => job.status === "sent" || job.status === "simulated"
       );
+      const acceptedPrints = dispatchedJobs.filter((job) => job.status !== "failed");
       const failedPrints = dispatchedJobs.filter((job) => job.status === "failed");
       const printedItemIds = new Set(
         successfulPrints.flatMap((job) => job.items.map((item) => item.id))
       );
+      const acceptedItemIds = new Set(
+        acceptedPrints.flatMap((job) => job.items.map((item) => item.id))
+      );
+      const latestAcceptedJobIdByItemId = new Map<string, string>();
+      acceptedPrints.forEach((job) => {
+        job.items.forEach((item) => {
+          latestAcceptedJobIdByItemId.set(item.id, job.id);
+        });
+      });
       const allPendingPrinted =
         pendingPrintItems.length > 0 &&
         pendingPrintItems.every((item) => printedItemIds.has(item.id));
@@ -3957,6 +3976,7 @@ export function TableOrderScreen({
         }
 
         const previousSentQuantity = item.sentQuantity ?? 0;
+        const previousQueuedQuantity = item.queuedQuantity ?? 0;
         const wasPendingForPrint = pendingPrintItems.some((pendingItem) => pendingItem.id === item.id);
 
         if (printedItemIds.has(item.id)) {
@@ -3964,6 +3984,10 @@ export function TableOrderScreen({
             ...item,
             status: "sent" as const,
             sentQuantity: item.quantity,
+            queuedQuantity: 0,
+            printStatus: "sent" as const,
+            lastPrintJobId: latestAcceptedJobIdByItemId.get(item.id) ?? item.lastPrintJobId ?? null,
+            sentToKitchenAt: new Date().toISOString(),
           };
         }
 
@@ -3973,14 +3997,28 @@ export function TableOrderScreen({
                 ...item,
                 status: "sent" as const,
                 sentQuantity: previousSentQuantity,
+                queuedQuantity: previousQueuedQuantity,
               }
             : item;
+        }
+
+        if (acceptedItemIds.has(item.id)) {
+          return {
+            ...item,
+            status: previousSentQuantity > 0 ? ("sent" as const) : ("draft" as const),
+            sentQuantity: previousSentQuantity,
+            queuedQuantity: item.quantity,
+            printStatus: "queued" as const,
+            lastPrintJobId: latestAcceptedJobIdByItemId.get(item.id) ?? item.lastPrintJobId ?? null,
+          };
         }
 
         return {
           ...item,
           status: previousSentQuantity > 0 ? ("sent" as const) : ("draft" as const),
           sentQuantity: previousSentQuantity,
+          queuedQuantity: previousQueuedQuantity,
+          printStatus: previousSentQuantity > 0 ? ("sent" as const) : ("pending" as const),
         };
       });
 
@@ -4036,6 +4074,8 @@ export function TableOrderScreen({
             : `Comanda salvata ma stampa non riuscita: ${failedPrints
                 .map((job) => job.errorMessage || `errore ${job.printerName}`)
                 .join(" · ")}`
+          : acceptedPrints.some((job) => job.status === "pending")
+            ? "Comanda salvata. Stampa in coda: bridge locale non connesso oppure in attesa."
           : dispatchedPrinters.length > 0
             ? `Comanda inviata e stampata su ${dispatchedPrinters.join(", ")}`
             : "Comanda registrata senza stampante configurata"
@@ -5713,6 +5753,7 @@ export function TableOrderScreen({
     });
     const printerNames = Array.from(new Set(jobs.map((job) => job.printerName).filter(Boolean)));
     const failedJob = jobs.find((job) => job.status === "failed");
+    const queuedJob = jobs.find((job) => job.status === "pending");
 
     recordAuditEvent({
       eventType: "RECEIPT_PRINTED",
@@ -5736,6 +5777,8 @@ export function TableOrderScreen({
     setStatusMessage(
       failedJob
         ? failedJob.errorMessage || "Preconto registrato con errore di stampa"
+        : queuedJob
+          ? "Preconto salvato. Stampa in coda al bridge locale."
         : printerNames.length > 0
           ? `Preconto inviato a ${printerNames.join(", ")}`
           : "Preconto registrato"
@@ -6171,22 +6214,29 @@ export function TableOrderScreen({
     </div>
   );
 
-  const renderPaymentControlsPanel = () => (
+  const renderPaymentControlsPanel = () => {
+    const paymentControlsContent = (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[#fffefb]">
       <div className="shrink-0 border-b border-[#d8d5cc] bg-[#f7f4ee] px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="text-sm font-semibold uppercase text-[#5d564e]">Pagamento</div>
-            <div className="mt-1 text-[11px] font-medium text-[#7a736a]">Step 2 di 2 · Conferma</div>
+            <div className="mt-1 text-[11px] font-medium text-[#7a736a]">
+              {paymentStep === "calculator"
+                ? "Configura e conferma il pagamento"
+                : "Step 2 di 2 · Conferma"}
+            </div>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setPaymentStep("calculator")}
-              className="h-9 rounded-[4px] border border-[#d8d5cc] bg-[#fbf8f2] px-3 text-xs font-semibold text-[#2e2a25]"
-            >
-              Indietro al calcolo
-            </button>
+            {paymentStep === "confirm" ? (
+              <button
+                type="button"
+                onClick={() => setPaymentStep("calculator")}
+                className="h-9 rounded-[4px] border border-[#d8d5cc] bg-[#fbf8f2] px-3 text-xs font-semibold text-[#2e2a25]"
+              >
+                Indietro al calcolo
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={handleCancelPayment}
@@ -6200,6 +6250,31 @@ export function TableOrderScreen({
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         <div className="space-y-4">
+          <div className="rounded-[4px] border border-[#a9c9e6] bg-[#eef7ff] p-3">
+            <div className="text-[11px] font-semibold uppercase text-[#5b6f83]">Totale da pagare</div>
+            <div className="mt-1 text-2xl font-bold text-[#0b3c5d]">{formatEuro(paymentAdjustedTotal)}</div>
+            <div className="mt-3 grid grid-cols-1 gap-2 text-xs text-[#4f6272] sm:grid-cols-2">
+              <div className="rounded-[4px] border border-[#c7d9ea] bg-white px-3 py-2">
+                <div className="uppercase text-[#6e7f8d]">Metodo pagamento</div>
+                <div className="mt-1 font-semibold text-[#0b3c5d]">
+                  {enabledPaymentMethods.find((method) => method.id === paymentMethod)?.label ||
+                    paymentMethod ||
+                    "Contanti"}
+                </div>
+              </div>
+              <div className="rounded-[4px] border border-[#c7d9ea] bg-white px-3 py-2">
+                <div className="uppercase text-[#6e7f8d]">Documento fiscale</div>
+                <div className="mt-1 font-semibold text-[#0b3c5d]">
+                  {documentMode === "FATTURA"
+                    ? "Fattura"
+                    : documentMode === "SCONTRINO_PARLANTE"
+                      ? "Scontrino parlante"
+                      : "Scontrino"}
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div className="rounded-[4px] border border-[#d8d5cc] bg-[#ffffff] p-3">
             <div className="flex items-center justify-between gap-3">
               <div className="text-xs font-semibold uppercase text-[#5d564e]">Intestatario fattura</div>
@@ -6797,7 +6872,33 @@ export function TableOrderScreen({
         </div>
       </div>
     </div>
-  );
+    );
+
+    return (
+      <FinalPaymentPanel
+        totalLabel={formatEuro(paymentAdjustedTotal)}
+        paymentMethodLabel={
+          enabledPaymentMethods.find((method) => method.id === paymentMethod)?.label ||
+          paymentMethod ||
+          "Contanti"
+        }
+        documentLabel={
+          documentMode === "FATTURA"
+            ? "Fattura"
+            : documentMode === "SCONTRINO_PARLANTE"
+              ? "Scontrino parlante"
+              : "Scontrino"
+        }
+        canConfirm={Boolean(paymentMethod) && canConfirmPayments}
+        showBackToCalculator={paymentStep === "confirm"}
+        onBackToCalculator={() => setPaymentStep("calculator")}
+        onConfirmPayment={handleConfirmPayment}
+        onReturnToTable={handleCancelPayment}
+      >
+        {paymentControlsContent}
+      </FinalPaymentPanel>
+    );
+  };
 
   return (
     <main className="min-h-screen bg-[#fffdfa] text-[#2e2a25]">
@@ -6814,7 +6915,9 @@ export function TableOrderScreen({
             "relative min-w-0 flex-1 overflow-hidden",
             isPalmareMode
               ? "flex flex-col"
-              : "grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)]",
+              : panelMode === "payment"
+                ? "grid grid-cols-1"
+                : "grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)]",
           ].join(" ")}
         >
           {isPalmareMode ? (
@@ -6868,6 +6971,7 @@ export function TableOrderScreen({
             />
           ) : (
             <>
+          {panelMode === "payment" && !isPalmareMode ? null : (
           <aside
             className={[
               "relative min-h-0 bg-[#fbf8f2]",
@@ -7100,16 +7204,7 @@ export function TableOrderScreen({
                 </div>
               </>
             ) : showPaymentLeftPanel ? (
-              paymentStep === "calculator" ? (
-                <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-3">
-                  <div className="border-b border-[#d8d5cc] pb-2 text-sm font-semibold uppercase text-[#5d564e]">
-                    Riepilogo tavolo
-                  </div>
-                  <div className="mt-3 min-h-0 flex-1 overflow-hidden">{renderPaymentSummaryPanel()}</div>
-                </div>
-              ) : (
-                renderPaymentControlsPanel()
-              )
+              renderPaymentControlsPanel()
             ) : showOccupiedMiniMap ? (
               <div className="flex min-h-0 flex-1 items-center justify-center bg-[#fbf8f2] px-6 text-center">
                 <div className="flex h-full min-h-0 w-full flex-col rounded-[4px] border border-[#d8d5cc] bg-[#ffffff]">
@@ -7220,6 +7315,7 @@ export function TableOrderScreen({
               />
             ) : null}
           </aside>
+          )}
 
           <section className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-[#fffefb]">
             <header className={isPalmareMode ? "shrink-0 border-b border-[#d8d5cc] bg-[#f7f4ee] px-3 py-3" : "border-b border-[#d8d5cc] bg-[#f7f4ee] px-4 py-3"}>
@@ -7424,26 +7520,31 @@ export function TableOrderScreen({
               }
             >
               {panelMode === "payment" ? (
-                <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                  <div className="flex items-center justify-between gap-3 border-b border-[#d8d5cc] pb-2">
-                    <div className="text-sm font-semibold uppercase text-[#5d564e]">
-                      {paymentStep === "calculator" ? "Calcolo importo" : "Riepilogo finale pagamento"}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleCancelPayment}
-                      className="inline-flex h-10 items-center justify-center rounded-[4px] border border-[#d8d5cc] bg-[#ffffff] px-4 text-sm font-semibold text-[#2e2a25] hover:bg-[#fbf8f2]"
-                    >
-                      Torna al tavolo
-                    </button>
+                <div
+                  className="grid min-h-0 flex-1 grid-cols-[minmax(360px,420px)_minmax(0,1fr)] gap-4 overflow-hidden"
+                  style={{ paddingBottom: "calc(0.5rem + env(safe-area-inset-bottom, 0px))" }}
+                >
+                  <div className="min-h-0 overflow-hidden rounded-[4px] border border-[#d8d5cc] bg-[#fffefb]">
+                    {renderPaymentControlsPanel()}
                   </div>
-                  <div
-                    className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden"
-                    style={{ paddingBottom: "calc(0.5rem + env(safe-area-inset-bottom, 0px))" }}
-                  >
-                    {paymentStep === "calculator"
-                      ? renderPaymentCalculatorPanel()
-                      : renderPaymentFinalSummaryPanel()}
+                  <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[4px] border border-[#d8d5cc] bg-[#fffefb] p-4">
+                    <div className="flex items-center justify-between gap-3 border-b border-[#d8d5cc] pb-2">
+                      <div className="text-sm font-semibold uppercase text-[#5d564e]">
+                        {paymentStep === "calculator" ? "Calcolo importo" : "Riepilogo finale pagamento"}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleCancelPayment}
+                        className="inline-flex h-10 items-center justify-center rounded-[4px] border border-[#d8d5cc] bg-[#ffffff] px-4 text-sm font-semibold text-[#2e2a25] hover:bg-[#fbf8f2]"
+                      >
+                        Torna al tavolo
+                      </button>
+                    </div>
+                    <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden">
+                      {paymentStep === "calculator"
+                        ? renderPaymentCalculatorPanel()
+                        : renderPaymentFinalSummaryPanel()}
+                    </div>
                   </div>
                 </div>
               ) : panelMode === "detail" ? (

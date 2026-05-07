@@ -6,7 +6,8 @@
     "dev": "sh -c 'PORT=\"${WEB_APP_PORT:-3101}\"; next dev --hostname 0.0.0.0 --port \"$PORT\"'",
     "build": "next build",
     "start": "sh -c 'PORT=\"${WEB_APP_PORT:-3101}\"; next start --hostname 0.0.0.0 --port \"$PORT\"'",
-    "lint": "next lint"
+    "lint": "next lint",
+    "print-bridge": "node scripts/print-bridge.mjs"
   },
   "dependencies": {
     "next": "14.2.32",

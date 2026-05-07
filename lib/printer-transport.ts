@@ -31,8 +31,11 @@ export type TcpPrintJobPayload = {
     | "void"
     | "test-print";
   summary: string;
+  tableId?: string;
   tableLabel?: string;
+  sourceTableId?: string;
   sourceTableLabel?: string;
+  destinationTableId?: string;
   destinationTableLabel?: string;
   roomLabel?: string;
   destinationRoomLabel?: string;
@@ -67,5 +70,8 @@ export type PrinterTransportResponse = {
   openedSocket: boolean;
   printed: boolean;
   at: string;
+  queued?: boolean;
+  bridgeOnline?: boolean;
+  jobId?: string;
   errorCode?: string;
 };

@@ -460,6 +460,35 @@ During the whole transition:
 - Printing feature flags and command settings are preserved in the blob mirror and printer metadata during transition, not yet as dedicated primary relational settings reads.
 - Final cutover still requires parity checks on production-like data before local/blob sources can be downgraded further.
 
+## Print queue on Vercel
+
+The production-safe print architecture is now:
+
+1. Vercel saves business data in Supabase.
+2. Explicit print actions enqueue `print_jobs` in Supabase.
+3. A local LAN bridge polls queued jobs and performs TCP printing.
+4. The bridge updates:
+   - `print_jobs.status`
+   - `print_bridge_status.last_seen_at`
+   - `order_lines.sent_quantity` / `queued_quantity` for kitchen jobs
+
+Important behavioral guardrails:
+
+- `Salva modifiche` must never enqueue prints.
+- `Invia comanda` enqueues only delta lines not already sent or queued.
+- Already sent lines are not reprinted automatically.
+- If the bridge is offline, jobs remain queued and the order stays saved.
+- Direct TCP from Vercel must stay disabled; direct TCP is only for local debug mode.
+
+Operational diagnostics:
+
+- `/api/admin/print-diagnostics`
+  - bridge online/offline
+  - queued / processing / failed / printed counts
+  - last printed job
+  - last failed job
+  - selected table pending / queued / sent line counts
+
 ## Backups
 
 ### Daily

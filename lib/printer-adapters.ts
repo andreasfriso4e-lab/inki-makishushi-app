@@ -238,8 +238,11 @@ export class EscPosPrinterAdapter extends BasePrinterAdapter {
         id: job.id,
         type: job.type,
         summary: job.summary,
+        tableId: job.tableId,
         tableLabel: job.tableLabel,
+        sourceTableId: job.tableId,
         sourceTableLabel: job.sourceTableLabel,
+        destinationTableId: undefined,
         destinationTableLabel: job.destinationTableLabel,
         roomLabel: job.roomLabel,
         destinationRoomLabel: job.destinationRoomLabel,
@@ -267,7 +270,7 @@ export class EscPosPrinterAdapter extends BasePrinterAdapter {
 
     return appendJobState(
       job,
-      result.ok ? "sent" : "failed",
+      result.ok ? (result.queued ? "pending" : "sent") : "failed",
       result.message,
       result.ok ? "" : result.message
     );
@@ -294,10 +297,49 @@ export class EpsonRtXmlPrinterAdapter extends BasePrinterAdapter {
       return appendJobState(job, "failed", `Invio fiscale RT fallito su ${this.printer.name}`, "Porta mancante");
     }
 
+    const payload: PrinterPrintRequest = {
+      printer: toTransportPrinter(this.printer),
+      job: {
+        id: job.id,
+        type: job.type,
+        summary: job.summary,
+        tableId: job.tableId,
+        tableLabel: job.tableLabel,
+        sourceTableId: job.tableId,
+        sourceTableLabel: job.sourceTableLabel,
+        destinationTableId: undefined,
+        destinationTableLabel: job.destinationTableLabel,
+        roomLabel: job.roomLabel,
+        destinationRoomLabel: job.destinationRoomLabel,
+        operator: job.operator,
+        commandNumber: job.commandNumber,
+        guests: job.guests,
+        customerLabel: job.customerLabel,
+        companyLabel: job.companyLabel,
+        commandSettingsSnapshot: job.commandSettingsSnapshot,
+        documentType: job.documentType,
+        paymentMethod: job.paymentMethod,
+        subtotal: job.subtotal,
+        discountLabel: job.discountLabel,
+        total: job.total,
+        createdAt: job.createdAt,
+        items: job.items.map((item) => ({
+          id: item.id,
+          name: item.name,
+          quantity: item.quantity,
+          guestCode: item.guestCode ?? null,
+          course: item.course,
+          note: item.note,
+        })),
+      },
+    };
+    const result = await postInternalPrinterEndpoint(INTERNAL_PRINTER_PRINT_ENDPOINT, payload);
+
     return appendJobState(
       job,
-      "sent",
-      `${getJobLabel(job)} pronto per Epson RT ${this.printer.ipAddress}:${this.printer.port} (canale server-side predisposto)`
+      result.ok ? (result.queued ? "pending" : "sent") : "failed",
+      result.message,
+      result.ok ? "" : result.message
     );
   }
 }

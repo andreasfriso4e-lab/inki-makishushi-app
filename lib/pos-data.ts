@@ -148,10 +148,12 @@ export type OrderItem = {
   quantity: number;
   commensaleCode?: string | null;
   sentQuantity?: number;
+  queuedQuantity?: number;
   unitPrice: number;
   originalUnitPrice?: number;
   course: CourseGroup;
   status: "draft" | "sent";
+  printStatus?: "pending" | "queued" | "sent" | "cancelled" | "modified";
   paymentState?: "unpaid" | "paid";
   operatorLabel?: string;
   note?: string;
@@ -168,6 +170,8 @@ export type OrderItem = {
   updatedByOperatorId?: string;
   deletedByOperatorId?: string | null;
   sentByOperatorId?: string | null;
+  lastPrintJobId?: string | null;
+  sentToKitchenAt?: string | null;
   paidByOperatorId?: string | null;
   approvedByOperatorId?: string | null;
 };

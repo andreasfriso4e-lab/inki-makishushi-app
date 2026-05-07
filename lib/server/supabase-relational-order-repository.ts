@@ -98,10 +98,14 @@ type RelationalOrderLineRow = {
   unit_price: number | string;
   quantity: number | string;
   sent_quantity: number | string;
+  queued_quantity: number | string | null;
+  print_status: string | null;
   line_total: number | string;
   notes: string | null;
   additions: unknown[] | null;
   removals: unknown[] | null;
+  sent_to_kitchen_at: string | null;
+  last_print_job_id: string | null;
   metadata: Record<string, unknown> | null;
   legacy_payload: Partial<OrderItem> | null;
   created_at: string;
@@ -186,6 +190,19 @@ function toNumber(value: number | string | null | undefined) {
   }
 
   return 0;
+}
+
+function normalizeOrderItemPrintStatus(
+  value: unknown,
+  fallback: OrderItem["printStatus"] = "pending"
+): OrderItem["printStatus"] {
+  return value === "queued" ||
+    value === "sent" ||
+    value === "cancelled" ||
+    value === "modified" ||
+    value === "pending"
+    ? value
+    : fallback;
 }
 
 function normalizeTableLegacyId(table: RelationalTableRow) {
@@ -363,6 +380,13 @@ function buildOrderOverlay(
         quantity: toNumber(line.quantity),
         commensaleCode: guest?.code?.trim() || (payload.commensaleCode ?? null),
         sentQuantity: toNumber(line.sent_quantity),
+        queuedQuantity: Math.max(
+          0,
+          Math.min(
+            toNumber(line.queued_quantity ?? payload.queuedQuantity ?? 0),
+            toNumber(line.quantity)
+          )
+        ),
         unitPrice: toNumber(line.unit_price),
         originalUnitPrice: payload.originalUnitPrice,
         course: fallbackCourse,
@@ -370,6 +394,10 @@ function buildOrderOverlay(
           line.status === "sent" || toNumber(line.sent_quantity) > 0
             ? ("sent" as const)
             : ("draft" as const),
+        printStatus: normalizeOrderItemPrintStatus(
+          typeof payload.printStatus === "string" ? payload.printStatus : line.print_status,
+          toNumber(line.sent_quantity) > 0 ? "sent" : "pending"
+        ),
         paymentState: payload.paymentState,
         operatorLabel: payload.operatorLabel,
         note: payload.note ?? line.notes ?? undefined,
@@ -399,6 +427,8 @@ function buildOrderOverlay(
         updatedByOperatorId: payload.updatedByOperatorId,
         deletedByOperatorId: payload.deletedByOperatorId ?? null,
         sentByOperatorId: payload.sentByOperatorId ?? null,
+        lastPrintJobId: payload.lastPrintJobId ?? line.last_print_job_id ?? null,
+        sentToKitchenAt: payload.sentToKitchenAt ?? line.sent_to_kitchen_at ?? null,
         paidByOperatorId: payload.paidByOperatorId ?? null,
         approvedByOperatorId: payload.approvedByOperatorId ?? null,
       } satisfies OrderItem;
@@ -641,10 +671,14 @@ function buildOrderLineRows(
     unit_price: item.unitPrice,
     quantity: item.quantity,
     sent_quantity: Math.min(item.sentQuantity ?? 0, item.quantity),
+    queued_quantity: Math.min(item.queuedQuantity ?? 0, item.quantity),
+    print_status: item.printStatus ?? (Math.min(item.sentQuantity ?? 0, item.quantity) > 0 ? "sent" : "pending"),
     line_total: item.unitPrice * item.quantity,
     notes: item.note || null,
     additions: item.additions ?? [],
     removals: item.removals ?? [],
+    sent_to_kitchen_at: item.sentToKitchenAt ?? null,
+    last_print_job_id: item.lastPrintJobId ?? null,
     metadata: {
       legacy_product_id: item.productId,
       payment_state: item.paymentState ?? null,
@@ -653,6 +687,8 @@ function buildOrderLineRows(
       vat_rate_key: item.vatRateKey ?? null,
       vat_rate_label: item.vatRateLabel ?? null,
       vat_rate_value: item.vatRateValue ?? null,
+      queued_quantity: Math.min(item.queuedQuantity ?? 0, item.quantity),
+      print_status: item.printStatus ?? (Math.min(item.sentQuantity ?? 0, item.quantity) > 0 ? "sent" : "pending"),
     },
     legacy_payload: item,
     created_at: item.createdAt || nowIso(),

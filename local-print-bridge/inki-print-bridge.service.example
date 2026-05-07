@@ -1,0 +1,20 @@
+[Unit]
+Description=Inki Makisushi Local Print Bridge
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/inki/pos-frontend
+ExecStart=/usr/bin/node /opt/inki/pos-frontend/scripts/print-bridge.mjs
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+Environment=SUPABASE_URL=SUPABASE_URL
+Environment=SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY
+Environment=RESTAURANT_ID=default
+Environment=PRINT_BRIDGE_POLL_MS=1500
+Environment=PRINT_BRIDGE_ID=bridge-cassa-1
+
+[Install]
+WantedBy=multi-user.target
+
