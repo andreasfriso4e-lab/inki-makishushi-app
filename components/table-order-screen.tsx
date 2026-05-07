@@ -7599,7 +7599,7 @@ export function TableOrderScreen({
                   className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] md:gap-5"
                   style={{ paddingBottom: "calc(0.5rem + env(safe-area-inset-bottom, 0px))" }}
                 >
-                  <div className="min-h-0 min-w-0 overflow-hidden rounded-[4px] border border-[#d8d5cc] bg-[#fffefb]">
+                  <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[4px] border border-[#d8d5cc] bg-[#fffefb]">
                     {renderPaymentControlsPanel()}
                   </div>
                   <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[4px] border border-[#d8d5cc] bg-[#fffefb] p-4 lg:p-5">
