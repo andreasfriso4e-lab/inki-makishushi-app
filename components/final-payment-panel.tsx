@@ -27,7 +27,7 @@ export function FinalPaymentPanel({
 }: FinalPaymentPanelProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[#fffefb]">
-      <div className="shrink-0 border-b border-[#d8d5cc] bg-[#f7f4ee] px-4 py-3">
+      <div className="shrink-0 border-b border-[#d8d5cc] bg-[#f7f4ee] px-5 py-4">
         <div className="text-[11px] font-bold uppercase tracking-[0.08em] text-[#0b3c5d]">
           PANNELLO FINALE PAGAMENTO ATTIVO
         </div>
@@ -48,8 +48,8 @@ export function FinalPaymentPanel({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        <div className="space-y-4">
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <div className="space-y-5">
           <div className="rounded-[4px] border border-[#a9c9e6] bg-[#eef7ff] p-3">
             <div className="text-[11px] font-semibold uppercase text-[#5b6f83]">Totale da pagare</div>
             <div className="mt-1 text-2xl font-bold text-[#0b3c5d]">{totalLabel}</div>
@@ -70,15 +70,15 @@ export function FinalPaymentPanel({
       </div>
 
       <div
-        className="shrink-0 border-t border-[#d8d5cc] bg-[#f7f4ee] px-4 py-3"
+        className="shrink-0 border-t border-[#d8d5cc] bg-[#f7f4ee] px-5 py-4"
         style={{ paddingBottom: "calc(1rem + env(safe-area-inset-bottom, 0px))" }}
       >
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.3fr)]">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.25fr)]">
           {showBackToCalculator ? (
             <button
               type="button"
               onClick={onBackToCalculator}
-              className="h-10 rounded-[4px] border border-[#c7c1b6] bg-[#ffffff] px-3 text-xs font-semibold text-[#2e2a25]"
+              className="h-11 rounded-[4px] border border-[#c7c1b6] bg-[#ffffff] px-3 text-sm font-semibold text-[#2e2a25]"
             >
               Indietro
             </button>
@@ -86,7 +86,7 @@ export function FinalPaymentPanel({
             <button
               type="button"
               onClick={onReturnToTable}
-              className="h-10 rounded-[4px] border border-[#c7c1b6] bg-[#ffffff] px-3 text-xs font-semibold text-[#2e2a25]"
+              className="h-11 rounded-[4px] border border-[#c7c1b6] bg-[#ffffff] px-3 text-sm font-semibold text-[#2e2a25]"
             >
               Annulla
             </button>
@@ -94,7 +94,7 @@ export function FinalPaymentPanel({
           <button
             type="button"
             onClick={onReturnToTable}
-            className="h-10 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-xs font-semibold text-[#2e2a25]"
+            className="h-11 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-sm font-semibold text-[#2e2a25]"
           >
             Torna al tavolo
           </button>
@@ -102,7 +102,7 @@ export function FinalPaymentPanel({
             type="button"
             onClick={onConfirmPayment}
             disabled={!canConfirm}
-            className="h-12 rounded-[4px] border border-[#a9c9e6] bg-[#cfe8ff] px-3 text-sm font-bold text-[#0b3c5d] disabled:cursor-not-allowed disabled:opacity-50"
+            className="h-12 rounded-[4px] border border-[#a9c9e6] bg-[#cfe8ff] px-4 text-sm font-bold text-[#0b3c5d] disabled:cursor-not-allowed disabled:opacity-50"
           >
             Conferma pagamento
           </button>

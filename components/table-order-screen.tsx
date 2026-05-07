@@ -602,6 +602,15 @@ export function TableOrderScreen({
   const [companyLookupMessage, setCompanyLookupMessage] = useState("");
   const [companyLookupError, setCompanyLookupError] = useState("");
   const defaultVatRate = getDefaultOperationalVatRate();
+  const isDevelopment = process.env.NODE_ENV !== "production";
+
+  const devPaymentLog = (message: string, payload?: Record<string, unknown>) => {
+    if (!isDevelopment) {
+      return;
+    }
+
+    console.info(`[CASSA][PAYMENT] ${message}`, payload ?? {});
+  };
 
   const currentTable =
     getTableById(tableId) ??
@@ -1425,6 +1434,13 @@ export function TableOrderScreen({
   const hasPendingOrderItems = orderItems.some(
     (item) => item.productId !== AUTO_COVER_PRODUCT_ID && getPendingItemQuantity(item) > 0
   );
+  const isOrderDirty =
+    orderItems.length !== savedOrderItems.length ||
+    JSON.stringify(orderItems) !== JSON.stringify(savedOrderItems);
+  const canOpenPayment =
+    canAccessPayments &&
+    getRealOrderItems(orderItems).some((item) => item.quantity > 0) &&
+    orderTotal > 0;
 
   const getCurrentTableLabel = () =>
     currentTable?.saleMode === "Take Away" ? `Takeaway ${currentTableName}` : `Tavolo ${currentTableName}`;
@@ -1464,6 +1480,27 @@ export function TableOrderScreen({
     }
 
     setStatusMessage(message);
+  };
+
+  const persistOrderWithoutSending = (source: "save" | "payment") => {
+    const hasPayableOrder = getRealOrderItems(orderItems).some((item) => item.quantity > 0);
+
+    if (isDevelopment) {
+      devPaymentLog(source === "payment" ? "Autosave ordine prima del pagamento" : "Salva modifiche", {
+        tableId,
+        panelMode,
+        hasPayableOrder,
+        orderItemsCount: orderItems.length,
+      });
+    }
+
+    setSavedOrderItems(orderItems);
+    updateTable(tableId, {
+      status: hasPayableOrder ? "occupied" : "free",
+      paymentStatus: source === "payment" && hasPayableOrder ? "pending" : "idle",
+    });
+
+    return hasPayableOrder;
   };
 
   const finalizeVoidAction = async (printStorno: boolean) => {
@@ -4109,9 +4146,9 @@ export function TableOrderScreen({
       return;
     }
 
-    setSavedOrderItems(orderItems);
+    const hasPayableOrder = persistOrderWithoutSending("save");
     setActiveMode("RIEPILOGO");
-    setPanelMode("sent-summary");
+    setPanelMode(hasPayableOrder ? "sent-summary" : "draft");
     setIsUtilityMenuOpen(false);
     setIsRistampaOpen(false);
     setIsVoidSelectionMode(false);
@@ -4222,8 +4259,24 @@ export function TableOrderScreen({
       return;
     }
 
-    if (!hasAnyItems) {
+    if (!canOpenPayment) {
       return;
+    }
+
+    if (isDevelopment) {
+      devPaymentLog("Click Pagamento", {
+        tableId,
+        panelMode,
+        isOrderDirty,
+        orderItemsCount: orderItems.length,
+        total: orderTotal,
+      });
+    }
+
+    if (isOrderDirty || panelMode === "draft" || panelMode === "edit-order") {
+      persistOrderWithoutSending("payment");
+    } else {
+      updateTable(tableId, { status: "occupied", paymentStatus: "pending" });
     }
 
     setPaymentMethod(payableItems.length > 0 ? getPreferredDefaultPaymentMethod() : null);
@@ -4239,11 +4292,20 @@ export function TableOrderScreen({
     setQuickDiscountMode("euro");
     setIsFidelityScannerOpen(false);
     setSelectedSplitItemIds([]);
-    updateTable(tableId, { paymentStatus: "pending" });
+    setActiveMode("RIEPILOGO");
     setPanelMode("payment");
     setIsUtilityMenuOpen(false);
     setIsRistampaOpen(false);
     setStatusMessage("");
+
+    if (isDevelopment) {
+      devPaymentLog("Ingresso payment mode", {
+        tableId,
+        panelMode: "payment",
+        paymentMethod: payableItems.length > 0 ? getPreferredDefaultPaymentMethod() : null,
+        documentMode: "SCONTRINO",
+      });
+    }
   };
 
   const handleCancelPayment = () => {
@@ -4270,6 +4332,19 @@ export function TableOrderScreen({
     setIsRistampaOpen(false);
     setStatusMessage("");
   };
+
+  useEffect(() => {
+    if (panelMode !== "payment") {
+      return;
+    }
+
+    devPaymentLog("Render pannello pagamento finale", {
+      component: "FinalPaymentPanel",
+      paymentStep,
+      tableId,
+      total: paymentAdjustedTotal,
+    });
+  }, [devPaymentLog, panelMode, paymentAdjustedTotal, paymentStep, tableId]);
 
   const resetPaymentAdjustments = () => {
     setPaymentAdjustments([]);
@@ -7521,13 +7596,13 @@ export function TableOrderScreen({
             >
               {panelMode === "payment" ? (
                 <div
-                  className="grid min-h-0 flex-1 grid-cols-[minmax(360px,420px)_minmax(0,1fr)] gap-4 overflow-hidden"
+                  className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] md:gap-5"
                   style={{ paddingBottom: "calc(0.5rem + env(safe-area-inset-bottom, 0px))" }}
                 >
-                  <div className="min-h-0 overflow-hidden rounded-[4px] border border-[#d8d5cc] bg-[#fffefb]">
+                  <div className="min-h-0 min-w-0 overflow-hidden rounded-[4px] border border-[#d8d5cc] bg-[#fffefb]">
                     {renderPaymentControlsPanel()}
                   </div>
-                  <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[4px] border border-[#d8d5cc] bg-[#fffefb] p-4">
+                  <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[4px] border border-[#d8d5cc] bg-[#fffefb] p-4 lg:p-5">
                     <div className="flex items-center justify-between gap-3 border-b border-[#d8d5cc] pb-2">
                       <div className="text-sm font-semibold uppercase text-[#5d564e]">
                         {paymentStep === "calculator" ? "Calcolo importo" : "Riepilogo finale pagamento"}
@@ -8282,7 +8357,7 @@ export function TableOrderScreen({
               ) : null}
 
               {panelMode === "draft" || panelMode === "edit-order" ? (
-                <div className="grid grid-cols-2 gap-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)]">
+                <div className="grid grid-cols-2 gap-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.2fr)]">
                   <button
                     type="button"
                     onClick={() => {
@@ -8316,6 +8391,14 @@ export function TableOrderScreen({
                   >
                     ANNULLA MODIFICHE
                   </button>
+                  <button
+                    type="button"
+                    onClick={handleOpenPayment}
+                    disabled={!canOpenPayment}
+                    className="h-12 border border-[#a9c9e6] bg-[#cfe8ff] px-3 text-sm font-bold text-[#0b3c5d] hover:bg-[#bfe0ff] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    PAGAMENTO
+                  </button>
                 </div>
               ) : panelMode === "sent-summary" ? (
                 <div className="grid grid-cols-2 gap-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_110px_minmax(0,1.1fr)]">
@@ -8337,7 +8420,7 @@ export function TableOrderScreen({
                   <button
                     type="button"
                     onClick={handleOpenPayment}
-                    disabled={!canAccessPayments}
+                    disabled={!canOpenPayment}
                     className="h-12 border border-[#a9c9e6] bg-[#cfe8ff] px-3 text-sm font-bold text-[#0b3c5d] hover:bg-[#bfe0ff] disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     PAGAMENTO
