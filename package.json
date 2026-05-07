@@ -1,0 +1,25 @@
+{
+  "name": "pos-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "sh -c 'PORT=\"${WEB_APP_PORT:-3101}\"; next dev --hostname 0.0.0.0 --port \"$PORT\"'",
+    "build": "next build",
+    "start": "sh -c 'PORT=\"${WEB_APP_PORT:-3101}\"; next start --hostname 0.0.0.0 --port \"$PORT\"'",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "14.2.32",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "20.17.57",
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "autoprefixer": "10.4.20",
+    "postcss": "8.4.49",
+    "tailwindcss": "3.4.16",
+    "typescript": "5.6.3"
+  }
+}

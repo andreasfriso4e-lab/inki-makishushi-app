@@ -1,0 +1,66 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --pos-radius: 4px;
+  --pos-shell-bg: #fffdfa;
+  --pos-panel-bg: #ffffff;
+  --pos-panel-subtle-bg: #fffefb;
+  --pos-panel-muted-bg: #f7f4ee;
+}
+
+body {
+  @apply antialiased;
+  background: var(--pos-shell-bg);
+  color: #2f2a21;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  -webkit-text-size-adjust: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  border-radius: var(--pos-radius);
+  font-size: 16px;
+  min-height: 44px;
+  touch-action: manipulation;
+}
+
+input,
+textarea,
+select {
+  scroll-margin-bottom: 320px;
+}
+
+textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+
+input,
+textarea {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+body {
+  min-height: 100dvh;
+  overscroll-behavior: contain;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.pos-shell {
+  background: var(--pos-shell-bg);
+}
