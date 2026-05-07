@@ -38,6 +38,7 @@ const TABLES_SYNC_EVENT = "pos:tables-sync";
 const TABLES_API_ENDPOINT = "/api/tables";
 const REMOTE_TABLES_POLL_INTERVAL_MS = 10000;
 const REMOTE_TABLES_SYNC_DEBOUNCE_MS = 180;
+const ACTIVE_ORDER_DRAFT_STORAGE_KEY_PREFIX = "inki:active-order-draft:";
 
 type UpdateTableInput = Partial<Omit<PosTableState, "id" | "room" | "orders">>;
 
@@ -316,6 +317,22 @@ function buildEmptyTableState(table: PosTableState): PosTableState {
   };
 }
 
+function getRealOrderQuantity(table: PosTableState) {
+  return table.orders
+    .filter((item) => item.productId !== "auto-cover-charge" && item.quantity > 0)
+    .reduce((total, item) => total + item.quantity, 0);
+}
+
+function getPendingDraftQuantity(table: PosTableState) {
+  return table.orders
+    .filter((item) => item.productId !== "auto-cover-charge" && item.quantity > 0)
+    .reduce((total, item) => total + Math.max(item.quantity - Math.max(item.sentQuantity ?? 0, item.queuedQuantity ?? 0), 0), 0);
+}
+
+function tableHasUnsavedDraft(table: PosTableState) {
+  return getPendingDraftQuantity(table) > 0 && table.paymentStatus !== "paid";
+}
+
 function createCleanTablesState(initialTables: PosTableState[]) {
   return initialTables.map((table) => buildEmptyTableState(table));
 }
@@ -408,6 +425,180 @@ function normalizeStoredTables(
   });
 
   return sanitizeHydratedTables(mergedTables).tables;
+}
+
+function getSnapshotTimestamp(value?: string | null) {
+  if (!value) {
+    return 0;
+  }
+
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function debugOrderMutation(
+  source: string,
+  tableId: string,
+  beforeOrders: OrderItem[],
+  afterOrders: OrderItem[],
+  extra?: Record<string, unknown>
+) {
+  if (process.env.NODE_ENV === "production") {
+    return;
+  }
+
+  console.groupCollapsed("[ORDER MUTATION]", source);
+  console.log({
+    beforeLength: beforeOrders.length,
+    afterLength: afterOrders.length,
+    tableId,
+    extra: extra ?? {},
+  });
+  console.trace();
+  console.groupEnd();
+}
+
+function mergeTablesPreferringNewest(
+  incomingTables: PosTableState[],
+  currentTables: PosTableState[],
+  initialTables: PosTableState[]
+) {
+  const currentTablesMap = new Map(currentTables.map((table) => [table.id, table]));
+  const mergedIncomingTables = incomingTables.map((incomingTable) => {
+    const currentTable = currentTablesMap.get(incomingTable.id);
+
+    if (!currentTable) {
+      return incomingTable;
+    }
+
+    const currentRealQuantity = getRealOrderQuantity(currentTable);
+    const incomingRealQuantity = getRealOrderQuantity(incomingTable);
+    const activeDraft = readActiveOrderDraftForTable(incomingTable.id);
+    const activeDraftRealQuantity = Array.isArray(activeDraft?.orderLines)
+      ? activeDraft.orderLines
+          .filter((item) => item.productId !== "auto-cover-charge" && item.quantity > 0)
+          .reduce((total, item) => total + item.quantity, 0)
+      : 0;
+    const keepCurrentDraft =
+      (tableHasUnsavedDraft(currentTable) &&
+        incomingRealQuantity < currentRealQuantity) ||
+      (activeDraftRealQuantity > 0 && incomingRealQuantity === 0);
+
+    if (keepCurrentDraft) {
+      if (process.env.NODE_ENV !== "production" && activeDraftRealQuantity > 0 && incomingRealQuantity === 0) {
+        console.info("[TABLE CONTEXT] BLOCKED_EMPTY_REFRESH_FOR_ACTIVE_TABLE", {
+          tableId: incomingTable.id,
+          currentRealQuantity,
+          incomingRealQuantity,
+          activeDraftRealQuantity,
+        });
+      }
+      return currentTable;
+    }
+
+    return getSnapshotTimestamp(currentTable.updatedAt) > getSnapshotTimestamp(incomingTable.updatedAt)
+      ? currentTable
+      : incomingTable;
+  });
+
+  return normalizeStoredTables(mergedIncomingTables, initialTables);
+}
+
+function readActiveOrderDraftForTable(tableId: string) {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(`${ACTIVE_ORDER_DRAFT_STORAGE_KEY_PREFIX}${tableId}`);
+    if (!rawValue) {
+      return null;
+    }
+
+    const parsed = JSON.parse(rawValue) as {
+      tableId?: string;
+      orderLines?: OrderItem[];
+    };
+
+    if (parsed.tableId !== tableId || !Array.isArray(parsed.orderLines)) {
+      return null;
+    }
+
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function applyIncomingTablesState(
+  incomingTables: PosTableState[],
+  currentTables: PosTableState[],
+  initialTables: PosTableState[],
+  reason: "hydrate-remote" | "hydrate-storage" | "sync-storage" | "sync-server"
+) {
+  const protectActiveTableDraft = (
+    previousTable: PosTableState,
+    incomingTable: PosTableState
+  ) => {
+    const activeDraft = readActiveOrderDraftForTable(previousTable.id);
+    const previousRealQuantity = getRealOrderQuantity(previousTable);
+    const incomingRealQuantity = getRealOrderQuantity(incomingTable);
+    const hasLocalDraftLines =
+      previousRealQuantity > 0 ||
+      (Array.isArray(activeDraft?.orderLines) &&
+        activeDraft.orderLines.some((item) => item.productId !== "auto-cover-charge" && item.quantity > 0));
+
+    if (hasLocalDraftLines && incomingRealQuantity === 0) {
+      if (process.env.NODE_ENV !== "production") {
+        console.info("[TABLE CONTEXT] BLOCKED_EMPTY_REFRESH_FOR_ACTIVE_TABLE", {
+          tableId: previousTable.id,
+          reason,
+          previousRealQuantity,
+          incomingRealQuantity,
+        });
+      }
+
+      return {
+        ...incomingTable,
+        orders: previousTable.orders,
+      };
+    }
+
+    return incomingTable;
+  };
+
+  const protectedIncomingTables = incomingTables.map((incomingTable) => {
+    const currentTable = currentTables.find((table) => table.id === incomingTable.id);
+    return currentTable ? protectActiveTableDraft(currentTable, incomingTable) : incomingTable;
+  });
+  const nextTables = mergeTablesPreferringNewest(protectedIncomingTables, currentTables, initialTables);
+
+  if (process.env.NODE_ENV !== "production") {
+    const protectedTables = currentTables
+      .filter((currentTable) => {
+        const nextTable = nextTables.find((table) => table.id === currentTable.id);
+        const activeDraft = readActiveOrderDraftForTable(currentTable.id);
+        return (
+          nextTable &&
+          ((getRealOrderQuantity(currentTable) > 0 &&
+            getRealOrderQuantity(nextTable) < getRealOrderQuantity(currentTable)) ||
+            (activeDraft &&
+              Array.isArray(activeDraft.orderLines) &&
+              activeDraft.orderLines.length > 0 &&
+              getRealOrderQuantity(nextTable) === 0))
+        );
+      })
+      .map((table) => table.id);
+
+    console.info("[TABLES][APPLY_INCOMING_STATE]", {
+      reason,
+      incomingTables: incomingTables.length,
+      currentTables: currentTables.length,
+      protectedTables,
+    });
+  }
+
+  return nextTables;
 }
 
 function buildRoomsFromTables(tables: PosTableState[]): PosRoom[] {
@@ -577,18 +768,27 @@ export function TableProvider({ children }: { children: ReactNode }) {
 
       const remoteState = await fetchSharedTablesFromApi();
       if (remoteState?.tables) {
-        const sanitizedTables = normalizeStoredTables(remoteState.tables, getInitialTablesState());
-        setTables(sanitizedTables);
-        remoteUpdatedAtRef.current = remoteState.updatedAt;
+        const initialTables = getInitialTablesState();
+        setTables((currentTables) => {
+          const sanitizedTables = applyIncomingTablesState(
+            remoteState.tables,
+            currentTables,
+            initialTables,
+            "hydrate-remote"
+          );
 
-        if (typeof window !== "undefined") {
-          const debugSnapshot = sanitizeHydratedTables(sanitizedTables).debug;
-          window.localStorage.setItem(TABLES_STORAGE_KEY, JSON.stringify(sanitizedTables));
-          window.localStorage.setItem(TABLES_STORAGE_VERSION_KEY, TABLES_STORAGE_RESET_VERSION);
-          window.localStorage.setItem(TABLES_DEBUG_STORAGE_KEY, JSON.stringify(debugSnapshot));
-          (window as typeof window & { __POS_TABLE_DEBUG__?: unknown }).__POS_TABLE_DEBUG__ =
-            debugSnapshot;
-        }
+          if (typeof window !== "undefined") {
+            const debugSnapshot = sanitizeHydratedTables(sanitizedTables).debug;
+            window.localStorage.setItem(TABLES_STORAGE_KEY, JSON.stringify(sanitizedTables));
+            window.localStorage.setItem(TABLES_STORAGE_VERSION_KEY, TABLES_STORAGE_RESET_VERSION);
+            window.localStorage.setItem(TABLES_DEBUG_STORAGE_KEY, JSON.stringify(debugSnapshot));
+            (window as typeof window & { __POS_TABLE_DEBUG__?: unknown }).__POS_TABLE_DEBUG__ =
+              debugSnapshot;
+          }
+
+          return sanitizedTables;
+        });
+        remoteUpdatedAtRef.current = remoteState.updatedAt;
 
         setHasHydratedStorage(true);
         return;
@@ -617,15 +817,25 @@ export function TableProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      const sanitizedTables = normalizeStoredTables(readStoredTables(), getInitialTablesState());
-      setTables(sanitizedTables);
+      const storedTables = readStoredTables() ?? getInitialTablesState();
+      const initialTables = getInitialTablesState();
+      setTables((currentTables) => {
+        const sanitizedTables = applyIncomingTablesState(
+          storedTables,
+          currentTables,
+          initialTables,
+          "hydrate-storage"
+        );
 
-      if (typeof window !== "undefined") {
-        const debugSnapshot = sanitizeHydratedTables(sanitizedTables).debug;
-        window.localStorage.setItem(TABLES_DEBUG_STORAGE_KEY, JSON.stringify(debugSnapshot));
-        (window as typeof window & { __POS_TABLE_DEBUG__?: unknown }).__POS_TABLE_DEBUG__ =
-          debugSnapshot;
-      }
+        if (typeof window !== "undefined") {
+          const debugSnapshot = sanitizeHydratedTables(sanitizedTables).debug;
+          window.localStorage.setItem(TABLES_DEBUG_STORAGE_KEY, JSON.stringify(debugSnapshot));
+          (window as typeof window & { __POS_TABLE_DEBUG__?: unknown }).__POS_TABLE_DEBUG__ =
+            debugSnapshot;
+        }
+
+        return sanitizedTables;
+      });
 
       setHasHydratedStorage(true);
     };
@@ -692,18 +902,25 @@ export function TableProvider({ children }: { children: ReactNode }) {
 
     const syncTablesFromStorage = () => {
       const nextHomeAreas = getHomeAreaSettings();
-      const nextTables = normalizeStoredTables(readStoredTables(), getInitialTablesState());
-      const debugSnapshot = sanitizeHydratedTables(nextTables).debug;
+      const storedTables = readStoredTables() ?? getInitialTablesState();
+      const initialTables = getInitialTablesState();
 
       setHomeAreas((currentAreas) =>
         JSON.stringify(currentAreas) === JSON.stringify(nextHomeAreas) ? currentAreas : nextHomeAreas
       );
-      setTables((currentTables) =>
-        JSON.stringify(currentTables) === JSON.stringify(nextTables) ? currentTables : nextTables
-      );
-      window.localStorage.setItem(TABLES_DEBUG_STORAGE_KEY, JSON.stringify(debugSnapshot));
-      (window as typeof window & { __POS_TABLE_DEBUG__?: unknown }).__POS_TABLE_DEBUG__ =
-        debugSnapshot;
+      setTables((currentTables) => {
+        const nextTables = applyIncomingTablesState(
+          storedTables,
+          currentTables,
+          initialTables,
+          "sync-storage"
+        );
+        const debugSnapshot = sanitizeHydratedTables(nextTables).debug;
+        window.localStorage.setItem(TABLES_DEBUG_STORAGE_KEY, JSON.stringify(debugSnapshot));
+        (window as typeof window & { __POS_TABLE_DEBUG__?: unknown }).__POS_TABLE_DEBUG__ =
+          debugSnapshot;
+        return JSON.stringify(currentTables) === JSON.stringify(nextTables) ? currentTables : nextTables;
+      });
     };
 
     const syncTablesFromServer = async () => {
@@ -717,8 +934,7 @@ export function TableProvider({ children }: { children: ReactNode }) {
       }
 
       const nextHomeAreas = getHomeAreaSettings();
-      const nextTables = normalizeStoredTables(remoteState.tables, getInitialTablesState());
-      const debugSnapshot = sanitizeHydratedTables(nextTables).debug;
+      const initialTables = getInitialTablesState();
 
       remoteUpdatedAtRef.current = remoteState.updatedAt;
       isApplyingRemoteStateRef.current = true;
@@ -726,14 +942,46 @@ export function TableProvider({ children }: { children: ReactNode }) {
       setHomeAreas((currentAreas) =>
         JSON.stringify(currentAreas) === JSON.stringify(nextHomeAreas) ? currentAreas : nextHomeAreas
       );
-      setTables((currentTables) =>
-        JSON.stringify(currentTables) === JSON.stringify(nextTables) ? currentTables : nextTables
-      );
-      window.localStorage.setItem(TABLES_STORAGE_KEY, JSON.stringify(nextTables));
+      setTables((currentTables) => {
+        const nextTables = applyIncomingTablesState(
+          remoteState.tables,
+          currentTables,
+          initialTables,
+          "sync-server"
+        );
+        if (process.env.NODE_ENV !== "production") {
+          const preservedDraftTables = currentTables
+            .filter((currentTable) => {
+              const incomingTable = remoteState.tables.find((table) => table.id === currentTable.id);
+              return (
+                incomingTable &&
+                tableHasUnsavedDraft(currentTable) &&
+                getRealOrderQuantity(incomingTable) < getRealOrderQuantity(currentTable)
+              );
+            })
+            .map((table) => table.id);
+          console.info("[TABLES][REFETCH]", {
+            remoteTables: remoteState.tables.length,
+            currentTables: currentTables.length,
+            preservedDraftTables,
+          });
+          if (preservedDraftTables.length > 0) {
+            console.info("[TABLES][REFETCH] REFRESH_IGNORED_DUE_TO_DIRTY_DRAFT", {
+              preservedDraftTables,
+            });
+          }
+        }
+        const debugSnapshot = sanitizeHydratedTables(nextTables).debug;
+
+        window.localStorage.setItem(TABLES_STORAGE_KEY, JSON.stringify(nextTables));
+        window.localStorage.setItem(TABLES_STORAGE_VERSION_KEY, TABLES_STORAGE_RESET_VERSION);
+        window.localStorage.setItem(TABLES_DEBUG_STORAGE_KEY, JSON.stringify(debugSnapshot));
+        (window as typeof window & { __POS_TABLE_DEBUG__?: unknown }).__POS_TABLE_DEBUG__ =
+          debugSnapshot;
+
+        return JSON.stringify(currentTables) === JSON.stringify(nextTables) ? currentTables : nextTables;
+      });
       window.localStorage.setItem(TABLES_STORAGE_VERSION_KEY, TABLES_STORAGE_RESET_VERSION);
-      window.localStorage.setItem(TABLES_DEBUG_STORAGE_KEY, JSON.stringify(debugSnapshot));
-      (window as typeof window & { __POS_TABLE_DEBUG__?: unknown }).__POS_TABLE_DEBUG__ =
-        debugSnapshot;
     };
 
     const handleStorage = (event: StorageEvent) => {
@@ -847,6 +1095,7 @@ export function TableProvider({ children }: { children: ReactNode }) {
             return table;
           }
 
+          const beforeOrders = table.orders;
           const resolvedOrders =
             typeof nextOrders === "function" ? nextOrders(table.orders) : nextOrders;
           const now = getNowIso();
@@ -860,6 +1109,10 @@ export function TableProvider({ children }: { children: ReactNode }) {
             updatedByOperatorId: currentActor.operatorId,
           }));
 
+          debugOrderMutation("setTableOrders", tableId, beforeOrders, normalizedOrders, {
+            updatedAt: now,
+            tableStatus: table.status,
+          });
           diffOrderCollections(tableId, table.orders, normalizedOrders);
           const ordersChanged =
             JSON.stringify(table.orders) !== JSON.stringify(normalizedOrders);

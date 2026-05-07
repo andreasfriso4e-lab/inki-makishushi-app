@@ -23,6 +23,7 @@ import { createEmptyCompanyRecord, normalizeCompanyRecord } from "@/lib/company-
 import { lookupCompanyByVatNumber } from "@/lib/company-vat-lookup";
 import { addArchivedMovement } from "@/lib/document-archive";
 import { getDepartmentDisplayName } from "@/lib/department-settings";
+import { getActiveRestaurantId } from "@/lib/restaurant-config";
 import {
   appendFidelityScanLog,
   cancelPendingFidelityReward,
@@ -140,6 +141,47 @@ type PendingVoidAction = {
   nextOrders: OrderItem[];
   allowPrint: boolean;
 };
+type DraftOrderClearReason =
+  | "payment_completed"
+  | "empty_table_reset"
+  | "user_cancel_confirmed"
+  | "table_closed"
+  | "logout";
+type LocalDraftOrderSnapshot = {
+  tableId: string;
+  restaurantId: string;
+  orderId: string | null;
+  covers: number;
+  operatorId: string | null;
+  customerId: string | null;
+  orderLines: OrderItem[];
+  updatedAt: string;
+  hasUnsavedChanges: boolean;
+};
+type SafeOrderMutationReason =
+  | "PAYMENT_COMPLETED"
+  | "CONFIRMED_EMPTY_TABLE"
+  | "CONFIRMED_CANCEL_ORDER"
+  | "OPEN_DIFFERENT_EMPTY_TABLE"
+  | "ORDER_RESTORE"
+  | "AUTO_COVER_SYNC"
+  | "ADD_PRODUCT"
+  | "ADD_TARTARE_VARIANT"
+  | "ADD_PASTO"
+  | "ADD_SIZED_PRODUCT"
+  | "ADD_WAGYU"
+  | "ADD_CONFIGURED_POKE"
+  | "MOVE_ITEM_WITHIN_COURSE"
+  | "ASSIGN_GUEST_GROUP"
+  | "UPDATE_ITEM_QUANTITY"
+  | "SAVE_ITEM_NOTE"
+  | "DELETE_ITEM_CONFIRMED"
+  | "VOID_ACTION_APPLIED"
+  | "SEND_ORDER_RESULT"
+  | "CANCEL_CHANGES_RESTORE"
+  | "PAYMENT_SPLIT_QUOTA_SAVE"
+  | "PAYMENT_PARTIAL_SAVE"
+  | "SPLIT_PAYMENT_SAVE";
 const AUTO_COVER_PRODUCT_ID = "auto-cover-charge";
 const COVER_CHARGE_UNIT_PRICE = 3;
 const guestGroupOptions = ["C1", "C2", "C3", "C4", "C5", "C6"] as const;
@@ -386,6 +428,14 @@ function normalizeSearchValue(value: string) {
     .toLowerCase();
 }
 
+function getDraftSnapshotStorageKey(restaurantId: string, tableId: string) {
+  return `inki:draft-order:${restaurantId}:${tableId}`;
+}
+
+function getActiveDraftStorageKey(tableId: string) {
+  return `inki:active-order-draft:${tableId}`;
+}
+
 function slugify(value: string) {
   return normalizeSearchValue(value)
     .replace(/[^a-z0-9]+/g, "-")
@@ -527,6 +577,7 @@ export function TableOrderScreen({
   const [scannedFidelityCustomer, setScannedFidelityCustomer] = useState<FidelityCustomer | null>(null);
   const [selectedSplitItemIds, setSelectedSplitItemIds] = useState<string[]>([]);
   const [savedOrderItems, setSavedOrderItems] = useState<OrderItem[]>([]);
+  const [localDraftLines, setLocalDraftLines] = useState<OrderItem[]>([]);
   const [panelMode, setPanelMode] = useState<PanelMode>(initialPanelMode);
   const [detailName, setDetailName] = useState("");
   const [detailGuests, setDetailGuests] = useState("0");
@@ -567,6 +618,7 @@ export function TableOrderScreen({
     String(Math.max(initialTableSnapshot?.guests ?? 0, 1))
   );
   const [preOrderNote, setPreOrderNote] = useState("");
+  const [isFinalizingPayment, setIsFinalizingPayment] = useState(false);
   const [detailPickerMode, setDetailPickerMode] = useState<DetailPickerMode>(null);
   const [detailPickerSearch, setDetailPickerSearch] = useState("");
   const [detailEditorMode, setDetailEditorMode] = useState<DetailEditorMode>(null);
@@ -611,6 +663,35 @@ export function TableOrderScreen({
 
     console.info(`[CASSA][PAYMENT] ${message}`, payload ?? {});
   };
+  const devOrderLog = (message: string, payload?: Record<string, unknown>) => {
+    if (!isDevelopment) {
+      return;
+    }
+
+    console.info(`[CASSA][ORDER] ${message}`, payload ?? {});
+  };
+  const debugOrderMutation = (
+    source: string,
+    beforeItems: OrderItem[],
+    afterItems: OrderItem[],
+    extra?: Record<string, unknown>
+  ) => {
+    if (!isDevelopment) {
+      return;
+    }
+
+    console.groupCollapsed("[ORDER MUTATION]", source);
+    console.log({
+      beforeLength: beforeItems.length,
+      afterLength: afterItems.length,
+      tableId,
+      selectedTableId: currentTable?.id ?? null,
+      currentOrderId: afterItems[0]?.orderId ?? beforeItems[0]?.orderId ?? null,
+      extra: extra ?? {},
+    });
+    console.trace();
+    console.groupEnd();
+  };
 
   const currentTable =
     getTableById(tableId) ??
@@ -621,7 +702,11 @@ export function TableOrderScreen({
         }
       : undefined);
   const currentTableStatus = currentTable?.status ?? initialTableSnapshot?.status ?? "free";
-  const orderItems = currentTable?.orders ?? [];
+  const currentTableOrderItems = currentTable?.orders ?? [];
+  const orderItems = currentTableOrderItems.length > 0 ? currentTableOrderItems : localDraftLines;
+  const hasUnsavedChanges =
+    orderItems.length !== savedOrderItems.length ||
+    JSON.stringify(orderItems) !== JSON.stringify(savedOrderItems);
   const splitBillState = currentTable?.splitBillState ?? null;
   const splitQuotas = splitBillState?.quotas ?? [];
   const currentOperationalState = currentTable
@@ -638,6 +723,57 @@ export function TableOrderScreen({
   const getRealOrderItems = (items: OrderItem[]) =>
     items.filter((item) => item.productId !== AUTO_COVER_PRODUCT_ID && item.quantity > 0);
   const hasAnyItems = getRealOrderItems(orderItems).length > 0;
+  const snapshotOrderState = (label: string, meta?: Record<string, unknown>) => {
+    if (!isDevelopment) {
+      return;
+    }
+
+    console.log("[ORDER SNAPSHOT]", {
+      label,
+      tableId,
+      orderLinesLength: orderItems.length,
+      selectedTableLinesLength: currentTableOrderItems.length,
+      currentOrderLinesLength: currentTableOrderItems.length,
+      draftLinesLength: localDraftLines.length,
+      renderedLinesLength: orderItems.length,
+      mode: panelMode,
+      selectedCategory: activeCategory,
+      selectedCourse: activeMode,
+      paymentMode: panelMode === "payment",
+      activeTableId: currentTable?.id ?? null,
+      meta: meta ?? {},
+    });
+  };
+  const applyIncomingOrderFromBackend = (
+    incomingOrder: OrderItem[],
+    reason: "current-table-sync" | "detail-reinit"
+  ) => {
+    const incomingRealCount = getRealOrderItems(incomingOrder).length;
+    const currentRealCount = getRealOrderItems(orderItems).length;
+    const shouldRejectIncomingEmptyDraft =
+      (panelMode === "draft" || panelMode === "edit-order" || hasUnsavedChanges) &&
+      currentRealCount > 0 &&
+      incomingRealCount === 0;
+
+    if (shouldRejectIncomingEmptyDraft) {
+      devOrderLog("applyIncomingOrderFromBackend rifiuta ordine vuoto", {
+        reason,
+        tableId,
+        incomingRealCount,
+        currentRealCount,
+        hasUnsavedChanges,
+        panelMode,
+      });
+      return false;
+    }
+
+    debugOrderMutation(`applyIncomingOrderFromBackend:${reason}`, savedOrderItems, incomingOrder, {
+      hasUnsavedChanges,
+      panelMode,
+    });
+    setSavedOrderItems(incomingOrder);
+    return true;
+  };
   const [customers, setCustomers] = useState<CustomerRecord[]>(() => getCustomers());
   const [companies, setCompanies] = useState<CompanyRecord[]>(() => getCompanies());
   const [fidelityCustomers, setFidelityCustomers] = useState<FidelityCustomer[]>(() =>
@@ -657,6 +793,219 @@ export function TableOrderScreen({
     table: currentTable,
     items: orderItems,
   });
+  const intentionalOrderClearReasonRef = useRef<DraftOrderClearReason | null>(null);
+  const lastRecoveredDraftSignatureRef = useRef<string | null>(null);
+
+  const readDraftOrderSnapshot = () => {
+    if (typeof window === "undefined") {
+      return null;
+    }
+
+    try {
+      const restaurantId = getActiveRestaurantId();
+      const snapshotKey = getDraftSnapshotStorageKey(restaurantId, tableId);
+      const activeDraftKey = getActiveDraftStorageKey(tableId);
+      const rawSnapshot =
+        window.localStorage.getItem(activeDraftKey) ?? window.localStorage.getItem(snapshotKey);
+      if (!rawSnapshot) {
+        return null;
+      }
+
+      const parsedSnapshot = JSON.parse(rawSnapshot) as LocalDraftOrderSnapshot;
+      return Array.isArray(parsedSnapshot.orderLines) ? parsedSnapshot : null;
+    } catch (error) {
+      devOrderLog("Impossibile leggere snapshot draft locale", {
+        tableId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
+  const clearDraftOrderSnapshot = (reason: DraftOrderClearReason) => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const snapshotKey = getDraftSnapshotStorageKey(getActiveRestaurantId(), tableId);
+    const activeDraftKey = getActiveDraftStorageKey(tableId);
+    window.localStorage.removeItem(snapshotKey);
+    window.localStorage.removeItem(activeDraftKey);
+    setLocalDraftLines([]);
+    lastRecoveredDraftSignatureRef.current = null;
+    devOrderLog("INTENTIONAL_CLEAR", { tableId, reason, snapshotKey, activeDraftKey });
+  };
+
+  const saveDraftOrderSnapshot = (nextItems: OrderItem[] = orderItems) => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (!currentTable) {
+      return;
+    }
+
+    if (intentionalOrderClearReasonRef.current) {
+      return;
+    }
+
+    const restaurantId = getActiveRestaurantId();
+    const orderId = nextItems[0]?.orderId ?? null;
+    const snapshot: LocalDraftOrderSnapshot = {
+      tableId,
+      restaurantId,
+      orderId,
+      covers: currentTable.guests ?? 0,
+      operatorId: currentActor.operatorId ?? null,
+      customerId: currentTable.fidelityCustomerId ?? null,
+      orderLines: nextItems,
+      updatedAt: new Date().toISOString(),
+      hasUnsavedChanges: true,
+    };
+    const snapshotKey = getDraftSnapshotStorageKey(restaurantId, tableId);
+    const activeDraftKey = getActiveDraftStorageKey(tableId);
+    window.localStorage.setItem(snapshotKey, JSON.stringify(snapshot));
+    window.localStorage.setItem(activeDraftKey, JSON.stringify(snapshot));
+    setLocalDraftLines(nextItems);
+    devOrderLog("SAVE_DRAFT_SNAPSHOT", {
+      tableId,
+      restaurantId,
+      snapshotKey,
+      activeDraftKey,
+      orderLinesCount: nextItems.length,
+      realOrderLinesCount: getRealOrderItems(nextItems).length,
+    });
+  };
+
+  const intentionalClearReasons = new Set<SafeOrderMutationReason>([
+    "PAYMENT_COMPLETED",
+    "CONFIRMED_EMPTY_TABLE",
+    "CONFIRMED_CANCEL_ORDER",
+    "OPEN_DIFFERENT_EMPTY_TABLE",
+  ]);
+
+  const allowedShrinkingReasons = new Set<SafeOrderMutationReason>([
+    "PAYMENT_COMPLETED",
+    "CONFIRMED_EMPTY_TABLE",
+    "CONFIRMED_CANCEL_ORDER",
+    "OPEN_DIFFERENT_EMPTY_TABLE",
+    "DELETE_ITEM_CONFIRMED",
+    "VOID_ACTION_APPLIED",
+    "UPDATE_ITEM_QUANTITY",
+    "CANCEL_CHANGES_RESTORE",
+    "ORDER_RESTORE",
+  ]);
+
+  const safeSetOrderLines = (
+    nextLinesOrUpdater: OrderItem[] | ((current: OrderItem[]) => OrderItem[]),
+    reason: SafeOrderMutationReason,
+    meta?: Record<string, unknown>,
+    targetTableId = tableId
+  ) => {
+    setTableOrders(targetTableId, (previousLines) => {
+      const nextLines =
+        typeof nextLinesOrUpdater === "function" ? nextLinesOrUpdater(previousLines) : nextLinesOrUpdater;
+
+      if (previousLines.length > 0 && nextLines.length === 0 && !intentionalClearReasons.has(reason)) {
+        console.error("[ORDER RESET BLOCKED]", {
+          reason,
+          tableId: targetTableId,
+          previousLines,
+          nextLines,
+          meta: meta ?? {},
+        });
+        return previousLines;
+      }
+
+      if (previousLines.length > nextLines.length && !allowedShrinkingReasons.has(reason)) {
+        console.warn("[ORDER SHRINK BLOCKED]", {
+          reason,
+          tableId: targetTableId,
+          previousLines,
+          nextLines,
+          meta: meta ?? {},
+        });
+        return previousLines;
+      }
+
+      debugOrderMutation(`safeSetOrderLines:${reason}`, previousLines, nextLines, meta);
+      return nextLines;
+    });
+  };
+
+  const clearOrderIntentionally = (reason: DraftOrderClearReason) => {
+    intentionalOrderClearReasonRef.current = reason;
+    clearDraftOrderSnapshot(reason);
+    const safeReason: SafeOrderMutationReason =
+      reason === "payment_completed"
+        ? "PAYMENT_COMPLETED"
+        : reason === "empty_table_reset"
+          ? "CONFIRMED_EMPTY_TABLE"
+          : reason === "user_cancel_confirmed"
+            ? "CONFIRMED_CANCEL_ORDER"
+            : "OPEN_DIFFERENT_EMPTY_TABLE";
+    safeSetOrderLines([], safeReason, { clearReason: reason });
+    setSavedOrderItems([]);
+    if (typeof window !== "undefined") {
+      window.setTimeout(() => {
+        if (intentionalOrderClearReasonRef.current === reason) {
+          intentionalOrderClearReasonRef.current = null;
+        }
+      }, 0);
+    }
+  };
+
+  const restoreDraftOrderIfAccidentallyCleared = () => {
+    if (intentionalOrderClearReasonRef.current) {
+      return false;
+    }
+
+    const snapshot = readDraftOrderSnapshot();
+    if (!snapshot || snapshot.tableId !== tableId || snapshot.orderLines.length === 0) {
+      return false;
+    }
+
+    const snapshotSignature = JSON.stringify(
+      snapshot.orderLines.map((item) => ({
+        id: item.id,
+        quantity: item.quantity,
+        course: item.course,
+        updatedAt: item.updatedAt,
+      }))
+    );
+
+    if (lastRecoveredDraftSignatureRef.current === snapshotSignature) {
+      return false;
+    }
+
+    const snapshotRealLines = getRealOrderItems(snapshot.orderLines);
+    if (snapshotRealLines.length === 0) {
+      return false;
+    }
+
+    devOrderLog("RESTORE_DRAFT_SNAPSHOT", {
+      tableId,
+      orderLinesCount: snapshot.orderLines.length,
+      realOrderLinesCount: snapshotRealLines.length,
+    });
+    if (isDevelopment) {
+      console.info("[ORDER DRAFT RESTORED_FROM_LOCAL_STORAGE]", {
+        tableId,
+        orderLinesCount: snapshot.orderLines.length,
+      });
+    }
+    lastRecoveredDraftSignatureRef.current = snapshotSignature;
+    setLocalDraftLines(snapshot.orderLines);
+    safeSetOrderLines(snapshot.orderLines, "ORDER_RESTORE", { source: "local-storage-restore" });
+    updateTable(tableId, {
+      status: "occupied",
+      guests: snapshot.covers,
+      operator: getValidOperator(currentTable?.operator ?? currentUser.displayName),
+      paymentStatus: currentTable?.paymentStatus ?? "idle",
+    });
+    setStatusMessage("Bozza ordine recuperata");
+    return true;
+  };
 
   const shouldAutoReleaseEmptyTable = (
     table: PosTableState | undefined,
@@ -685,6 +1034,28 @@ export function TableOrderScreen({
     );
   };
 
+  useEffect(() => {
+    const snapshot = readDraftOrderSnapshot();
+    const nextLocalDraftLines =
+      currentTableOrderItems.length > 0
+        ? currentTableOrderItems
+        : snapshot?.orderLines?.length
+          ? snapshot.orderLines
+          : [];
+    setLocalDraftLines(nextLocalDraftLines);
+    snapshotOrderState("MOUNT_OR_TABLE_CHANGE", {
+      currentTableOrderItemsCount: currentTableOrderItems.length,
+      restoredDraftCount: snapshot?.orderLines?.length ?? 0,
+    });
+
+    return () => {
+      snapshotOrderState("UNMOUNT_TABLE_ORDER_SCREEN", {
+        currentTableOrderItemsCount: currentTableOrderItems.length,
+        localDraftLinesCount: nextLocalDraftLines.length,
+      });
+    };
+  }, [tableId]);
+
   const resetEmptyTableState = (
     table: PosTableState | undefined,
     { clearLocalDraft }: { clearLocalDraft: boolean }
@@ -697,7 +1068,23 @@ export function TableOrderScreen({
       return false;
     }
 
-    setTableOrders(table.id, []);
+    const protectedDraftSnapshot = readDraftOrderSnapshot();
+    if (
+      !intentionalOrderClearReasonRef.current &&
+      protectedDraftSnapshot &&
+      protectedDraftSnapshot.tableId === table.id &&
+      getRealOrderItems(protectedDraftSnapshot.orderLines).length > 0
+    ) {
+      devOrderLog("ANTI RESET BLOCKED", {
+        tableId: table.id,
+        reason: "empty-table-cleanup-guard",
+        snapshotOrderItemsCount: protectedDraftSnapshot.orderLines.length,
+      });
+      return false;
+    }
+
+    intentionalOrderClearReasonRef.current = "empty_table_reset";
+    safeSetOrderLines([], "CONFIRMED_EMPTY_TABLE", { source: "resetEmptyTableState" }, table.id);
     updateTable(table.id, {
       status: "free",
       guests: 0,
@@ -728,6 +1115,7 @@ export function TableOrderScreen({
 
     if (clearLocalDraft) {
       setSavedOrderItems([]);
+      clearDraftOrderSnapshot("empty_table_reset");
       setDetailGuests("0");
       setDetailNote("");
       setPreOrderCustomer("");
@@ -742,8 +1130,23 @@ export function TableOrderScreen({
   };
 
   useEffect(() => {
-    setSavedOrderItems(currentTable?.orders ?? []);
-  }, [tableId, currentTable]);
+    if ((panelMode === "draft" || panelMode === "edit-order") && hasUnsavedChanges) {
+      devOrderLog("Ignoro sync savedOrderItems da currentTable perche ci sono modifiche non salvate", {
+        tableId,
+        panelMode,
+        currentOrderItemsCount: currentTable?.orders?.length ?? 0,
+        draftOrderItemsCount: orderItems.length,
+      });
+      return;
+    }
+
+    devOrderLog("Sync savedOrderItems da currentTable", {
+      tableId,
+      panelMode,
+      nextSavedCount: currentTable?.orders?.length ?? 0,
+    });
+    applyIncomingOrderFromBackend(currentTable?.orders ?? [], "current-table-sync");
+  }, [applyIncomingOrderFromBackend, currentTable, devOrderLog, hasUnsavedChanges, orderItems.length, panelMode, tableId]);
 
   useEffect(() => {
     latestTableLifecycleRef.current = {
@@ -831,6 +1234,9 @@ export function TableOrderScreen({
 
   useEffect(() => {
     setPanelMode(initialPanelMode);
+    setIsFinalizingPayment(false);
+    intentionalOrderClearReasonRef.current = null;
+    lastRecoveredDraftSignatureRef.current = null;
   }, [initialPanelMode, tableId]);
 
   useEffect(() => {
@@ -840,6 +1246,22 @@ export function TableOrderScreen({
   }, [initialPanelMode, initialTableSnapshot?.status, tableId]);
 
   useEffect(() => {
+    if ((panelMode === "draft" || panelMode === "edit-order") && hasUnsavedChanges) {
+      devOrderLog("Ignoro reinizializzazione dettaglio tavolo per proteggere il draft locale", {
+        tableId,
+        panelMode,
+        currentOrderItemsCount: currentTable?.orders?.length ?? 0,
+        draftOrderItemsCount: orderItems.length,
+      });
+      return;
+    }
+
+    devOrderLog("Reinizializzo dettagli tavolo da currentTable", {
+      tableId,
+      panelMode,
+      tableStatus: currentTable?.status ?? "free",
+      currentOrderItemsCount: currentTable?.orders?.length ?? 0,
+    });
     setDetailName(currentTable?.name ?? "");
     setDetailGuests(String(currentTable?.guests ?? 0));
     setDetailNote(currentTable?.note ?? "");
@@ -849,13 +1271,97 @@ export function TableOrderScreen({
     setPreOrderServicePrice(getValidServicePrice(currentTable?.servicePriceLabel));
     setPreOrderGuests(String(Math.max(currentTable?.guests ?? 0, 1)));
     setPreOrderNote(currentTable?.note ?? "");
-  }, [currentTable]);
+  }, [currentTable, devOrderLog, hasUnsavedChanges, orderItems.length, panelMode, tableId]);
 
   const currentOperator = currentTable?.operator || currentUser.displayName;
   const currentTableName = currentTable?.name ?? "";
   const currentTableGuests = currentTable?.guests ?? 0;
   const currentTableNote = currentTable?.note ?? "";
   const currentTableRoom = currentTable?.room ?? "";
+
+  useEffect(() => {
+    devOrderLog("ORDER_LINES_CHANGED count", {
+      tableId,
+      count: orderItems.length,
+      realCount: getRealOrderItems(orderItems).length,
+      hasUnsavedChanges,
+      panelMode,
+      selectedTableId: currentTable?.id ?? null,
+    });
+
+    if (
+      intentionalOrderClearReasonRef.current ||
+      !currentTable ||
+      isFinalizingPayment ||
+      getRealOrderItems(orderItems).length === 0
+    ) {
+      return;
+    }
+
+    saveDraftOrderSnapshot(orderItems);
+  }, [
+    currentTable,
+    devOrderLog,
+    hasUnsavedChanges,
+    isFinalizingPayment,
+    orderItems,
+    panelMode,
+    tableId,
+  ]);
+
+  useEffect(() => {
+    if (intentionalOrderClearReasonRef.current || isFinalizingPayment) {
+      return;
+    }
+
+    if (!currentTable || currentTable.id !== tableId) {
+      return;
+    }
+
+    if (orderItems.length > 0) {
+      return;
+    }
+
+    const restored = restoreDraftOrderIfAccidentallyCleared();
+    if (restored) {
+      return;
+    }
+
+    const snapshot = readDraftOrderSnapshot();
+    if (snapshot?.orderLines?.length) {
+      devOrderLog("ANTI RESET BLOCKED", {
+        tableId,
+        currentOrderItemsCount: orderItems.length,
+        snapshotOrderItemsCount: snapshot.orderLines.length,
+      });
+    }
+  }, [
+    currentTable,
+    currentTableStatus,
+    devOrderLog,
+    isFinalizingPayment,
+    orderItems.length,
+    panelMode,
+    tableId,
+  ]);
+
+  const hasTransmittedItems = orderItems.some(
+    (item) =>
+      item.productId !== AUTO_COVER_PRODUCT_ID &&
+      ((item.sentQuantity ?? 0) > 0 || (item.queuedQuantity ?? 0) > 0)
+  );
+  const canResetEmptyTable =
+    Boolean(currentTable) &&
+    !hasTransmittedItems &&
+    shouldAutoReleaseEmptyTable(
+      currentTable
+        ? {
+            ...currentTable,
+            orders: orderItems,
+          }
+        : undefined,
+      orderItems
+    );
   const canAccessPayments = hasPermission("canAccessPayments");
   const canConfirmPayments = hasPermission("canConfirmPayments");
   const canSendOrders = hasPermission("canSendOrders");
@@ -938,7 +1444,7 @@ export function TableOrderScreen({
   useEffect(() => {
     const nextGuests = Math.max(currentTableGuests, 0);
 
-    setTableOrders(tableId, (currentItems) => {
+    safeSetOrderLines((currentItems) => {
       const existingCoverItem = currentItems.find(
         (item) => item.productId === AUTO_COVER_PRODUCT_ID
       );
@@ -980,8 +1486,8 @@ export function TableOrderScreen({
           vatRateValue: existingCoverItem?.vatRateValue ?? defaultVatRate.value,
         },
       ];
-    });
-  }, [currentOperator, currentTableGuests, defaultVatRate.key, defaultVatRate.label, defaultVatRate.value, setTableOrders, tableId]);
+    }, "AUTO_COVER_SYNC", { guests: nextGuests, operator: currentOperator });
+  }, [currentOperator, currentTableGuests, defaultVatRate.key, defaultVatRate.label, defaultVatRate.value, tableId]);
 
   const normalizedSearch = searchValue.trim().toLowerCase();
   const normalizedCatalogSearch = normalizeSearchValue(searchValue.trim());
@@ -1117,6 +1623,7 @@ export function TableOrderScreen({
     currentTableStatus === "occupied" &&
     panelMode === "sent-summary";
   const showPreOrderDetail =
+    !isFinalizingPayment &&
     currentTableStatus === "free" &&
     panelMode === "draft" &&
     isPreOrderDetailOpen;
@@ -1343,9 +1850,9 @@ export function TableOrderScreen({
     itemId: string,
     updater: (item: OrderItem) => OrderItem
   ) => {
-    setTableOrders(tableId, (currentItems) =>
+    safeSetOrderLines((currentItems) =>
       currentItems.map((item) => (item.id === itemId ? updater(item) : item))
-    );
+    , "ASSIGN_GUEST_GROUP", { itemId });
   };
 
   const handleAssignGuestGroup = (
@@ -1387,7 +1894,7 @@ export function TableOrderScreen({
 
     event?.stopPropagation();
 
-    setTableOrders(tableId, (currentItems) => {
+    safeSetOrderLines((currentItems) => {
       const candidateIndexes = currentItems
         .map((entry, index) => ({ entry, index }))
         .filter(
@@ -1418,7 +1925,7 @@ export function TableOrderScreen({
         nextItems[sourceGlobalIndex],
       ];
       return nextItems;
-    });
+    }, "MOVE_ITEM_WITHIN_COURSE", { itemId: item.id, direction });
     setStatusMessage(direction === "up" ? "Prodotto spostato in alto" : "Prodotto spostato in basso");
   };
 
@@ -1434,9 +1941,7 @@ export function TableOrderScreen({
   const hasPendingOrderItems = orderItems.some(
     (item) => item.productId !== AUTO_COVER_PRODUCT_ID && getPendingItemQuantity(item) > 0
   );
-  const isOrderDirty =
-    orderItems.length !== savedOrderItems.length ||
-    JSON.stringify(orderItems) !== JSON.stringify(savedOrderItems);
+  const isOrderDirty = hasUnsavedChanges;
   const canOpenPayment =
     canAccessPayments &&
     getRealOrderItems(orderItems).some((item) => item.quantity > 0) &&
@@ -1461,7 +1966,7 @@ export function TableOrderScreen({
   };
 
   const applyOrderStateAfterVoid = (nextOrders: OrderItem[], message: string) => {
-    setTableOrders(tableId, nextOrders);
+    safeSetOrderLines(nextOrders, "VOID_ACTION_APPLIED", { message });
     setSavedOrderItems(nextOrders);
     setSelectedVoidItemIds([]);
     setIsVoidSelectionMode(false);
@@ -1592,7 +2097,7 @@ export function TableOrderScreen({
   };
 
   const updateItemQuantity = (itemId: string, nextQuantity: number) => {
-    setTableOrders(tableId, (currentItems) =>
+    safeSetOrderLines((currentItems) =>
       currentItems.map((item) =>
         item.id === itemId
           ? {
@@ -1607,7 +2112,7 @@ export function TableOrderScreen({
             }
           : item
       )
-    );
+    , "UPDATE_ITEM_QUANTITY", { itemId, nextQuantity });
     setSavedOrderItems((currentItems) =>
       currentItems.map((item) =>
         item.id === itemId
@@ -1810,7 +2315,7 @@ export function TableOrderScreen({
         ? parsedPrice
         : noteEditorItem.unitPrice;
 
-    setTableOrders(tableId, (currentItems) =>
+    safeSetOrderLines((currentItems) =>
       currentItems.map((item) =>
         item.id === noteEditorItem.id
           ? {
@@ -1823,7 +2328,7 @@ export function TableOrderScreen({
             }
           : item
       )
-    );
+    , "SAVE_ITEM_NOTE", { itemId: noteEditorItem.id });
     setSavedOrderItems((currentItems) =>
       currentItems.map((item) =>
         item.id === noteEditorItem.id
@@ -1871,9 +2376,9 @@ export function TableOrderScreen({
       return;
     }
 
-    setTableOrders(tableId, (currentItems) =>
+    safeSetOrderLines((currentItems) =>
       currentItems.filter((item) => item.id !== deleteConfirmItem.id)
-    );
+    , "DELETE_ITEM_CONFIRMED", { itemId: deleteConfirmItem.id });
     setSavedOrderItems((currentItems) =>
       currentItems.filter((item) => item.id !== deleteConfirmItem.id)
     );
@@ -3349,7 +3854,7 @@ export function TableOrderScreen({
       return;
     }
 
-    setTableOrders(tableId, (currentItems) => {
+    safeSetOrderLines((currentItems) => {
       const existingItem = findIncrementTargetItem(
         currentItems,
         (item) =>
@@ -3359,16 +3864,26 @@ export function TableOrderScreen({
           !hasItemCustomizations(item)
       );
 
-      if (!existingItem) {
-        return [...currentItems, buildOrderItem(product, currentActor, activeMode)];
-      }
+      const nextItems = !existingItem
+        ? [...currentItems, buildOrderItem(product, currentActor, activeMode)]
+        : currentItems.map((item) =>
+          item.id === existingItem.id
+            ? { ...item, quantity: item.quantity + 1 }
+            : item
+        );
 
-      return currentItems.map((item) =>
-        item.id === existingItem.id
-          ? { ...item, quantity: item.quantity + 1 }
-          : item
-      );
-    });
+      devOrderLog("Aggiunta prodotto al draft ordine", {
+        tableId,
+        productId: product.id,
+        productName: product.name,
+        course: activeMode,
+        previousCount: currentItems.length,
+        nextCount: nextItems.length,
+        nextRealItemsCount: nextItems.filter((item) => item.productId !== AUTO_COVER_PRODUCT_ID).length,
+      });
+
+      return nextItems;
+    }, "ADD_PRODUCT", { productId: product.id, course: activeMode });
     setStatusMessage("");
   };
 
@@ -3386,7 +3901,7 @@ export function TableOrderScreen({
       return;
     }
 
-    setTableOrders(tableId, (currentItems) => {
+    safeSetOrderLines((currentItems) => {
       const variantProductId = `${product.id}-${variant.id}`;
       const existingItem = findIncrementTargetItem(
         currentItems,
@@ -3430,7 +3945,7 @@ export function TableOrderScreen({
           ? { ...item, quantity: item.quantity + 1 }
           : item
       );
-    });
+    }, "ADD_TARTARE_VARIANT", { productId: product.id, variantId: variant.id, course: activeMode });
 
     setPendingTartareProduct(null);
     setStatusMessage(`${product.name} aggiunto`);
@@ -3458,7 +3973,7 @@ export function TableOrderScreen({
       return;
     }
 
-    setTableOrders(tableId, (currentItems) => [
+    safeSetOrderLines((currentItems) => [
       ...currentItems,
       {
         createdAt: new Date().toISOString(),
@@ -3481,7 +3996,7 @@ export function TableOrderScreen({
         updatedByOperatorId: currentActor.operatorId,
         ...buildVatSnapshot(pastoPricingProduct.vatRateKey),
       },
-    ]);
+    ], "ADD_PASTO", { productId: pastoPricingProduct.id, course: activeMode });
 
     resetPastoPricing();
     setStatusMessage("Pasto aggiunto");
@@ -3501,7 +4016,7 @@ export function TableOrderScreen({
       return;
     }
 
-    setTableOrders(tableId, (currentItems) => {
+    safeSetOrderLines((currentItems) => {
       const existingItem = findIncrementTargetItem(
         currentItems,
         (item) =>
@@ -3520,7 +4035,7 @@ export function TableOrderScreen({
           ? { ...item, quantity: item.quantity + 1 }
           : item
       );
-    });
+    }, "ADD_SIZED_PRODUCT", { productId: product.id, variantId: sizeVariant.id, course: activeMode });
 
     setPendingSizeProduct(null);
     setSizeSelectorOverlay(null);
@@ -3558,7 +4073,7 @@ export function TableOrderScreen({
         ? `Prezzo al chilo: ${formatEuro(Number.parseFloat(wagyuPricePerKg) || 0)} x ${Number.parseFloat(wagyuWeight) || 0} kg`
         : "Prezzo manuale";
 
-    setTableOrders(tableId, (currentItems) => [
+    safeSetOrderLines((currentItems) => [
       ...currentItems,
       {
         createdAt: new Date().toISOString(),
@@ -3582,7 +4097,7 @@ export function TableOrderScreen({
         updatedByOperatorId: currentActor.operatorId,
         ...buildVatSnapshot(wagyuPricingProduct.vatRateKey),
       },
-    ]);
+    ], "ADD_WAGYU", { productId: wagyuPricingProduct.id, course: activeMode });
 
     resetWagyuPricing();
     setStatusMessage("Wagyu Tataki aggiunto");
@@ -3603,7 +4118,7 @@ export function TableOrderScreen({
       return;
     }
 
-    setTableOrders(tableId, (currentItems) => [
+    safeSetOrderLines((currentItems) => [
       ...currentItems,
       {
         createdAt: new Date().toISOString(),
@@ -3626,7 +4141,7 @@ export function TableOrderScreen({
         updatedByOperatorId: currentActor.operatorId,
         ...buildVatSnapshot(configuringPoke?.vatRateKey),
       },
-    ]);
+    ], "ADD_CONFIGURED_POKE", { productId: configuringPoke?.id ?? "poke-custom", course: activeMode });
     setConfiguringPoke(null);
     setStatusMessage("Poke aggiunta alla portata");
   };
@@ -3842,6 +4357,7 @@ export function TableOrderScreen({
   };
 
   const handleCancelPreOrderDetail = () => {
+    setIsFinalizingPayment(false);
     resetEmptyTableState(
       currentTable
         ? {
@@ -3856,6 +4372,7 @@ export function TableOrderScreen({
   };
 
   const handleContinuePreOrderDetail = () => {
+    setIsFinalizingPayment(false);
     if (!canEditTables) {
       setStatusMessage("Permesso non disponibile per questo utente");
       return;
@@ -3875,7 +4392,31 @@ export function TableOrderScreen({
     setIsPreOrderDetailOpen(false);
   };
 
+  const handleResetEmptyTable = () => {
+    if (!currentTable || !canResetEmptyTable) {
+      return;
+    }
+
+    setIsFinalizingPayment(false);
+    resetEmptyTableState(
+      {
+        ...currentTable,
+        orders: orderItems,
+      },
+      { clearLocalDraft: true }
+    );
+    setIsPreOrderDetailOpen(false);
+    setActiveMode("RIEPILOGO");
+    setPanelMode("draft");
+    setStatusMessage("Tavolo svuotato");
+    router.push(returnHomePath);
+  };
+
   const handleSendOrder = async () => {
+    snapshotOrderState("SEND_ORDER_CLICK", {
+      hasPendingOrderItems,
+    });
+    setIsFinalizingPayment(false);
     if (!canSendOrders) {
       setStatusMessage("Permesso non disponibile per questo utente");
       return;
@@ -4059,7 +4600,10 @@ export function TableOrderScreen({
         };
       });
 
-      setTableOrders(tableId, nextItems);
+      safeSetOrderLines(nextItems, "SEND_ORDER_RESULT", {
+        acceptedPrints: acceptedPrints.length,
+        failedPrints: failedPrints.length,
+      });
       setSavedOrderItems(nextItems);
       updateTable(tableId, {
         status: nextItems.some((item) => item.status === "sent") ? "occupied" : (currentTable?.status ?? "occupied"),
@@ -4141,6 +4685,9 @@ export function TableOrderScreen({
   };
 
   const handleSaveChanges = () => {
+    snapshotOrderState("SAVE_CHANGES_CLICK", {
+      hasUnsavedChanges,
+    });
     if (!canSaveOrderChanges) {
       setStatusMessage("Permesso non disponibile per questo utente");
       return;
@@ -4157,7 +4704,17 @@ export function TableOrderScreen({
   };
 
   const handleCancelChanges = () => {
-    setTableOrders(tableId, savedOrderItems);
+    if (savedOrderItems.length === 0) {
+      intentionalOrderClearReasonRef.current = "user_cancel_confirmed";
+      clearDraftOrderSnapshot("user_cancel_confirmed");
+    } else {
+      saveDraftOrderSnapshot(savedOrderItems);
+    }
+    safeSetOrderLines(
+      savedOrderItems,
+      savedOrderItems.length === 0 ? "CONFIRMED_CANCEL_ORDER" : "CANCEL_CHANGES_RESTORE",
+      { savedOrderItemsCount: savedOrderItems.length }
+    );
     setStatusMessage("Modifiche annullate");
   };
 
@@ -4245,15 +4802,41 @@ export function TableOrderScreen({
   };
 
   const handleReturnToHomeAfterPayment = () => {
+    setIsFinalizingPayment(true);
+    intentionalOrderClearReasonRef.current = "payment_completed";
+    clearDraftOrderSnapshot("payment_completed");
+    setIsPreOrderDetailOpen(false);
+    setSavedOrderItems([]);
+    setDetailGuests("0");
+    setDetailNote("");
+    setPreOrderCustomer("");
+    setPreOrderCompany("");
+    setPreOrderOperator(getValidOperator(currentUser.displayName));
+    setPreOrderServicePrice(getValidServicePrice(undefined));
+    setPreOrderGuests("1");
+    setPreOrderNote("");
     setActiveMode("RIEPILOGO");
     setPanelMode("draft");
     setIsPaymentDefaults();
     setIsUtilityMenuOpen(false);
     setIsRistampaOpen(false);
-    router.push(returnHomePath);
+    setStatusMessage("");
+    router.replace(returnHomePath);
+
+    if (typeof window !== "undefined") {
+      window.setTimeout(() => {
+        if (window.location.pathname.startsWith("/order/")) {
+          window.location.replace(returnHomePath);
+        }
+      }, 120);
+    }
   };
 
   const handleOpenPayment = () => {
+    snapshotOrderState("OPEN_PAYMENT_CLICK", {
+      isOrderDirty,
+    });
+    setIsFinalizingPayment(false);
     if (!canAccessPayments) {
       setStatusMessage("Permesso non disponibile per questo utente");
       return;
@@ -4309,6 +4892,7 @@ export function TableOrderScreen({
   };
 
   const handleCancelPayment = () => {
+    setIsFinalizingPayment(false);
     clearFidelitySelection({ keepCustomer: true, cancelReward: true });
     updateTable(tableId, { paymentStatus: "idle" });
     setPanelMode("sent-summary");
@@ -5193,6 +5777,7 @@ export function TableOrderScreen({
   };
 
   const handleConfirmPayment = async () => {
+    setIsFinalizingPayment(false);
     if (!canConfirmPayments) {
       setStatusMessage("Permesso non disponibile per questo utente");
       return;
@@ -5294,13 +5879,14 @@ export function TableOrderScreen({
       });
 
       if (activeSplitQuota.mode === "items") {
-        setTableOrders(tableId, nextItems);
+        safeSetOrderLines(nextItems, "PAYMENT_SPLIT_QUOTA_SAVE", {
+          splitQuotaId: activeSplitQuota.id,
+        });
         setSavedOrderItems(nextItems);
       }
 
       if (shouldCloseTable) {
-        setTableOrders(tableId, []);
-        setSavedOrderItems([]);
+        clearOrderIntentionally("payment_completed");
         updateTable(tableId, {
           status: "free",
           guests: 0,
@@ -5448,8 +6034,7 @@ export function TableOrderScreen({
         });
       }
 
-      setTableOrders(tableId, []);
-      setSavedOrderItems([]);
+      clearOrderIntentionally("payment_completed");
       updateTable(tableId, {
         status: "free",
         guests: 0,
@@ -5492,7 +6077,9 @@ export function TableOrderScreen({
               lastScanAt: currentTable.lastFidelityScanAt ?? new Date().toISOString(),
             })
           : null;
-      setTableOrders(tableId, nextItems);
+      safeSetOrderLines(nextItems, "PAYMENT_PARTIAL_SAVE", {
+        paymentMethod,
+      });
       setSavedOrderItems(nextItems);
       updateTable(tableId, {
         status: "occupied",
@@ -5542,6 +6129,7 @@ export function TableOrderScreen({
   };
 
   const handleConfirmSplitPayment = async () => {
+    setIsFinalizingPayment(false);
     if (!canConfirmPayments) {
       setStatusMessage("Permesso non disponibile per questo utente");
       return;
@@ -5618,8 +6206,7 @@ export function TableOrderScreen({
               lastScanAt: currentTable.lastFidelityScanAt ?? new Date().toISOString(),
             })
           : null;
-      setTableOrders(tableId, []);
-      setSavedOrderItems([]);
+      clearOrderIntentionally("payment_completed");
       updateTable(tableId, {
         status: "free",
         guests: 0,
@@ -5647,7 +6234,10 @@ export function TableOrderScreen({
       handleReturnToHomeAfterPayment();
       setStatusMessage("Conto selezionato pagato");
     } else {
-      setTableOrders(tableId, nextItems);
+      safeSetOrderLines(nextItems, "SPLIT_PAYMENT_SAVE", {
+        paymentMethod,
+        selectedSplitItemIds,
+      });
       setSavedOrderItems(nextItems);
       updateTable(tableId, {
         status: "occupied",
@@ -6989,7 +7579,10 @@ export function TableOrderScreen({
                           <button
                             key={category}
                             type="button"
-                            onClick={() => setActiveCategory(category)}
+                            onClick={() => {
+                              snapshotOrderState("CHANGE_CATEGORY", { category });
+                              setActiveCategory(category);
+                            }}
                             className={[
                               "flex items-center rounded-[4px] border px-3 text-left font-semibold",
                               isPalmareMode ? "min-h-12 text-base" : "min-h-11 text-sm",
@@ -7323,6 +7916,7 @@ export function TableOrderScreen({
                           key={mode}
                           type="button"
                           onClick={() => {
+                            snapshotOrderState("CHANGE_COURSE", { course: mode, surface: "palmare" });
                             setActiveMode(mode);
                             setStatusMessage("");
                           }}
@@ -7345,6 +7939,7 @@ export function TableOrderScreen({
                         key={mode}
                         type="button"
                         onClick={() => {
+                          snapshotOrderState("CHANGE_COURSE", { course: mode, surface: "cassa" });
                           setActiveMode(mode);
                           setStatusMessage("");
                         }}
@@ -7480,7 +8075,14 @@ export function TableOrderScreen({
                     : "flex-1 overflow-y-auto px-4 py-3"
               }
             >
-              {panelMode === "payment" ? (
+              {isFinalizingPayment ? (
+                <div className="flex h-full min-h-0 flex-1 items-center justify-center rounded-[4px] border border-[#d8d5cc] bg-[#fffefb] p-6">
+                  <div className="text-center">
+                    <div className="text-sm font-semibold uppercase text-[#5d564e]">Chiusura pagamento...</div>
+                    <div className="mt-2 text-xs text-[#7b7369]">Ritorno alla home tavoli in corso.</div>
+                  </div>
+                </div>
+              ) : panelMode === "payment" ? (
                 <div
                   className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] md:gap-5"
                   style={{ paddingBottom: "calc(0.5rem + env(safe-area-inset-bottom, 0px))" }}
@@ -8242,11 +8844,18 @@ export function TableOrderScreen({
                 </div>
               ) : null}
 
-              {panelMode === "draft" || panelMode === "edit-order" ? (
-                <div className="grid grid-cols-2 gap-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.2fr)]">
-                  <button
-                    type="button"
-                    onClick={() => {
+	              {panelMode === "draft" || panelMode === "edit-order" ? (
+	                <div
+	                  className={[
+	                    "grid grid-cols-2 gap-2",
+	                    canResetEmptyTable
+	                      ? "xl:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.2fr)]"
+	                      : "xl:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.2fr)]",
+	                  ].join(" ")}
+	                >
+	                  <button
+	                    type="button"
+	                    onClick={() => {
                       setActiveMode("RIEPILOGO");
                       setStatusMessage("");
                     }}
@@ -8270,16 +8879,25 @@ export function TableOrderScreen({
                   >
                     SALVA MODIFICHE
                   </button>
-                  <button
-                    type="button"
-                    onClick={handleCancelChanges}
+	                  <button
+	                    type="button"
+	                    onClick={handleCancelChanges}
                     className="h-10 border border-[#c7c1b6] bg-[#ffffff] px-3 text-xs font-semibold text-[#2e2a25]"
-                  >
-                    ANNULLA MODIFICHE
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleOpenPayment}
+	                  >
+	                    ANNULLA MODIFICHE
+	                  </button>
+	                  {canResetEmptyTable ? (
+	                    <button
+	                      type="button"
+	                      onClick={handleResetEmptyTable}
+	                      className="h-10 border border-[#d8d5cc] bg-[#fbf8f2] px-3 text-xs font-semibold text-[#8a3434]"
+	                    >
+	                      SVUOTA TAVOLO
+	                    </button>
+	                  ) : null}
+	                  <button
+	                    type="button"
+	                    onClick={handleOpenPayment}
                     disabled={!canOpenPayment}
                     className="h-12 border border-[#a9c9e6] bg-[#cfe8ff] px-3 text-sm font-bold text-[#0b3c5d] hover:bg-[#bfe0ff] disabled:cursor-not-allowed disabled:opacity-50"
                   >
