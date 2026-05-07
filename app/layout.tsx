@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { AuthProvider } from "@/store/auth-context";
 import { TableProvider } from "@/store/table-context";
+import { AppVersionMonitor } from "@/components/app-version-monitor";
 import { GlobalTouchInputManager } from "@/components/global-touch-input-manager";
 import { getRestaurantConfig } from "@/lib/restaurant-config";
 
@@ -44,6 +45,7 @@ export default function RootLayout({
           <AuthProvider>
             <TableProvider>
               <GlobalTouchInputManager />
+              <AppVersionMonitor />
               {children}
             </TableProvider>
           </AuthProvider>

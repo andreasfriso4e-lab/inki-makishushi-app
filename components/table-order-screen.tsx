@@ -50,6 +50,13 @@ import {
   getPrinterRoleForDepartment,
 } from "@/lib/printer-routing";
 import { getTableOperationalModeLabel, getTableOperationalState } from "@/lib/table-operational-status";
+import {
+  getClientRevisionValue,
+  getRealOrderLines,
+  getRealOrderLinesCount,
+  logTableSyncDecision,
+  safeApplyIncomingOrderState,
+} from "@/lib/table-sync-guard";
 import { appendStornoRecord, type StornoRecordType } from "@/lib/storno-log";
 import { recordAuditEvent } from "@/services/audit-log-service";
 import {
@@ -156,6 +163,7 @@ type LocalDraftOrderSnapshot = {
   customerId: string | null;
   orderLines: OrderItem[];
   updatedAt: string;
+  clientRevision: number;
   hasUnsavedChanges: boolean;
 };
 type SafeOrderMutationReason =
@@ -707,6 +715,9 @@ export function TableOrderScreen({
   const hasUnsavedChanges =
     orderItems.length !== savedOrderItems.length ||
     JSON.stringify(orderItems) !== JSON.stringify(savedOrderItems);
+  const hasProtectedLocalDraft =
+    localDraftLines.length > 0 &&
+    (hasUnsavedChanges || currentTableOrderItems.length === 0 || getClientRevisionValue(currentTable?.clientRevision) > 0);
   const splitBillState = currentTable?.splitBillState ?? null;
   const splitQuotas = splitBillState?.quotas ?? [];
   const currentOperationalState = currentTable
@@ -720,9 +731,8 @@ export function TableOrderScreen({
         hasPendingChanges: false,
         hasPrintedPrebill: false,
       };
-  const getRealOrderItems = (items: OrderItem[]) =>
-    items.filter((item) => item.productId !== AUTO_COVER_PRODUCT_ID && item.quantity > 0);
-  const hasAnyItems = getRealOrderItems(orderItems).length > 0;
+  const getRealOrderItems = getRealOrderLines;
+  const hasAnyItems = getRealOrderLinesCount(orderItems) > 0;
   const snapshotOrderState = (label: string, meta?: Record<string, unknown>) => {
     if (!isDevelopment) {
       return;
@@ -748,30 +758,55 @@ export function TableOrderScreen({
     incomingOrder: OrderItem[],
     reason: "current-table-sync" | "detail-reinit"
   ) => {
-    const incomingRealCount = getRealOrderItems(incomingOrder).length;
-    const currentRealCount = getRealOrderItems(orderItems).length;
-    const shouldRejectIncomingEmptyDraft =
-      (panelMode === "draft" || panelMode === "edit-order" || hasUnsavedChanges) &&
-      currentRealCount > 0 &&
-      incomingRealCount === 0;
+    const source = reason === "detail-reinit" ? "backend" : "refetch";
+    const { nextLines, decision } = safeApplyIncomingOrderState({
+      currentLines: orderItems,
+      incomingLines: incomingOrder,
+      source,
+      isDirtyDraft: (panelMode === "draft" || panelMode === "edit-order" || hasUnsavedChanges) && getRealOrderLinesCount(orderItems) > 0,
+      currentClientRevision: Math.max(
+        getClientRevisionValue(currentTable?.clientRevision),
+        getClientRevisionValue(readDraftOrderSnapshot()?.clientRevision)
+      ),
+      incomingClientRevision: getClientRevisionValue(currentTable?.clientRevision),
+      currentUpdatedAt: currentTable?.updatedAt,
+      incomingUpdatedAt: currentTable?.updatedAt,
+      reason,
+    });
 
-    if (shouldRejectIncomingEmptyDraft) {
-      devOrderLog("applyIncomingOrderFromBackend rifiuta ordine vuoto", {
+    logTableSyncDecision(decision, {
+      tableId,
+      source,
+      currentLinesCount: getRealOrderLinesCount(orderItems),
+      incomingLinesCount: getRealOrderLinesCount(incomingOrder),
+      currentRevision: Math.max(
+        getClientRevisionValue(currentTable?.clientRevision),
+        getClientRevisionValue(readDraftOrderSnapshot()?.clientRevision)
+      ),
+      incomingRevision: getClientRevisionValue(currentTable?.clientRevision),
+      reason,
+    });
+
+    if (!decision.allowed) {
+      devOrderLog("applyIncomingOrderFromBackend bloccato", {
         reason,
         tableId,
-        incomingRealCount,
-        currentRealCount,
-        hasUnsavedChanges,
-        panelMode,
+        decision: decision.reason,
+        currentVisibleCount: orderItems.length,
+        incomingCount: incomingOrder.length,
       });
       return false;
     }
 
-    debugOrderMutation(`applyIncomingOrderFromBackend:${reason}`, savedOrderItems, incomingOrder, {
+    debugOrderMutation(`applyIncomingOrderFromBackend:${reason}`, savedOrderItems, nextLines, {
       hasUnsavedChanges,
       panelMode,
+      decision: decision.reason,
     });
-    setSavedOrderItems(incomingOrder);
+    setSavedOrderItems(nextLines);
+    if (nextLines.length > 0) {
+      setLocalDraftLines(nextLines);
+    }
     return true;
   };
   const [customers, setCustomers] = useState<CustomerRecord[]>(() => getCustomers());
@@ -860,6 +895,7 @@ export function TableOrderScreen({
       customerId: currentTable.fidelityCustomerId ?? null,
       orderLines: nextItems,
       updatedAt: new Date().toISOString(),
+      clientRevision: Math.max(getClientRevisionValue(currentTable.clientRevision), 1),
       hasUnsavedChanges: true,
     };
     const snapshotKey = getDraftSnapshotStorageKey(restaurantId, tableId);
@@ -945,6 +981,21 @@ export function TableOrderScreen({
             ? "CONFIRMED_CANCEL_ORDER"
             : "OPEN_DIFFERENT_EMPTY_TABLE";
     safeSetOrderLines([], safeReason, { clearReason: reason });
+    logTableSyncDecision(
+      {
+        allowed: true,
+        reason: reason === "payment_completed" ? "PAYMENT_CLEAR" : "INTENTIONAL_CLEAR",
+      },
+      {
+        tableId,
+        source: reason === "payment_completed" ? "payment" : "clear_table",
+        currentLinesCount: getRealOrderLinesCount(orderItems),
+        incomingLinesCount: 0,
+        currentRevision: getClientRevisionValue(currentTable?.clientRevision),
+        incomingRevision: 0,
+        reason,
+      }
+    );
     setSavedOrderItems([]);
     if (typeof window !== "undefined") {
       window.setTimeout(() => {
@@ -989,9 +1040,12 @@ export function TableOrderScreen({
       realOrderLinesCount: snapshotRealLines.length,
     });
     if (isDevelopment) {
-      console.info("[ORDER DRAFT RESTORED_FROM_LOCAL_STORAGE]", {
+      console.info("[TABLE_SYNC][DRAFT_RECOVERED]", {
         tableId,
         orderLinesCount: snapshot.orderLines.length,
+        currentRevision: getClientRevisionValue(currentTable?.clientRevision),
+        incomingRevision: getClientRevisionValue(snapshot.clientRevision),
+        source: "local-storage",
       });
     }
     lastRecoveredDraftSignatureRef.current = snapshotSignature;
@@ -7878,6 +7932,11 @@ export function TableOrderScreen({
                   <h1 className={isPalmareMode ? "text-base font-bold" : "text-lg font-bold"}>{`Tavolo ${currentTableName}`}</h1>
                   <div className="mt-1 flex flex-wrap items-center gap-4 text-xs text-[#666057]">
                     <span>{`Operatore: ${currentOperator}`}</span>
+                    {hasProtectedLocalDraft ? (
+                      <span className="inline-flex items-center rounded-full border border-[#a9c9e6] bg-[#ecf6ff] px-2 py-0.5 text-[11px] font-semibold text-[#0b3c5d]">
+                        Bozza protetta
+                      </span>
+                    ) : null}
                     {currentTableStatus === "free" ? (
                       <label className="flex items-center gap-2">
                         <span className="font-semibold text-[#5f5950]">Coperti</span>

@@ -59,6 +59,7 @@ export type RestaurantTable = {
   deletedByOperatorId?: string | null;
   paidByOperatorId?: string | null;
   approvedByOperatorId?: string | null;
+  clientRevision?: number;
   fidelityCustomerId?: string | null;
   fidelityCustomerLabel?: string;
   fidelityCardCode?: string;

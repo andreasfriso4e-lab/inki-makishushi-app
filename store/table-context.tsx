@@ -26,6 +26,13 @@ import {
   type PosTableState,
 } from "@/lib/pos-data";
 import { getRestaurantStorageKey } from "@/lib/restaurant-storage";
+import {
+  getClientRevisionValue,
+  getRealOrderLinesCount,
+  logTableSyncDecision,
+  safeApplyIncomingTableState,
+  type TableSyncSource,
+} from "@/lib/table-sync-guard";
 import { recordAuditEvent } from "@/services/audit-log-service";
 import { useAuth } from "@/store/auth-context";
 
@@ -333,6 +340,10 @@ function tableHasUnsavedDraft(table: PosTableState) {
   return getPendingDraftQuantity(table) > 0 && table.paymentStatus !== "paid";
 }
 
+function getTableClientRevision(table: PosTableState) {
+  return getClientRevisionValue(table.clientRevision);
+}
+
 function createCleanTablesState(initialTables: PosTableState[]) {
   return initialTables.map((table) => buildEmptyTableState(table));
 }
@@ -496,6 +507,10 @@ function mergeTablesPreferringNewest(
       return currentTable;
     }
 
+    if (getTableClientRevision(currentTable) > getTableClientRevision(incomingTable)) {
+      return currentTable;
+    }
+
     return getSnapshotTimestamp(currentTable.updatedAt) > getSnapshotTimestamp(incomingTable.updatedAt)
       ? currentTable
       : incomingTable;
@@ -518,6 +533,9 @@ function readActiveOrderDraftForTable(tableId: string) {
     const parsed = JSON.parse(rawValue) as {
       tableId?: string;
       orderLines?: OrderItem[];
+      updatedAt?: string | null;
+      clientRevision?: number | null;
+      hasUnsavedChanges?: boolean | null;
     };
 
     if (parsed.tableId !== tableId || !Array.isArray(parsed.orderLines)) {
@@ -536,35 +554,64 @@ function applyIncomingTablesState(
   initialTables: PosTableState[],
   reason: "hydrate-remote" | "hydrate-storage" | "sync-storage" | "sync-server"
 ) {
-  const protectActiveTableDraft = (
-    previousTable: PosTableState,
-    incomingTable: PosTableState
-  ) => {
+  const protectActiveTableDraft = (previousTable: PosTableState, incomingTable: PosTableState) => {
     const activeDraft = readActiveOrderDraftForTable(previousTable.id);
-    const previousRealQuantity = getRealOrderQuantity(previousTable);
-    const incomingRealQuantity = getRealOrderQuantity(incomingTable);
-    const hasLocalDraftLines =
-      previousRealQuantity > 0 ||
-      (Array.isArray(activeDraft?.orderLines) &&
-        activeDraft.orderLines.some((item) => item.productId !== "auto-cover-charge" && item.quantity > 0));
+    const activeDraftLines = Array.isArray(activeDraft?.orderLines) ? activeDraft.orderLines : [];
+    const currentLines = previousTable.orders;
+    const effectiveCurrentLines =
+      getRealOrderLinesCount(currentLines) > 0 ? currentLines : activeDraftLines;
+    const effectiveCurrentRevision = Math.max(
+      getTableClientRevision(previousTable),
+      getClientRevisionValue(activeDraft?.clientRevision)
+    );
+    const currentLooksDirty =
+      tableHasUnsavedDraft(previousTable) ||
+      Boolean(activeDraft?.hasUnsavedChanges) ||
+      (activeDraftLines.length > 0 && getRealOrderLinesCount(incomingTable.orders) < getRealOrderLinesCount(activeDraftLines));
+    const { nextTable, decision } = safeApplyIncomingTableState({
+      currentTable: {
+        ...previousTable,
+        orders: effectiveCurrentLines,
+        clientRevision: effectiveCurrentRevision,
+        updatedAt:
+          getSnapshotTimestamp(previousTable.updatedAt) >= getSnapshotTimestamp(activeDraft?.updatedAt)
+            ? previousTable.updatedAt
+            : activeDraft?.updatedAt ?? previousTable.updatedAt,
+      },
+      incomingTable,
+      source:
+        reason === "hydrate-remote"
+          ? "hydrate"
+          : reason === "sync-server"
+            ? "polling"
+            : "storage",
+      isDirtyDraft: currentLooksDirty,
+      currentClientRevision: effectiveCurrentRevision,
+      incomingClientRevision: incomingTable.clientRevision,
+      currentUpdatedAt:
+        getSnapshotTimestamp(previousTable.updatedAt) >= getSnapshotTimestamp(activeDraft?.updatedAt)
+          ? previousTable.updatedAt
+          : activeDraft?.updatedAt ?? previousTable.updatedAt,
+      incomingUpdatedAt: incomingTable.updatedAt,
+      reason,
+    });
 
-    if (hasLocalDraftLines && incomingRealQuantity === 0) {
-      if (process.env.NODE_ENV !== "production") {
-        console.info("[TABLE CONTEXT] BLOCKED_EMPTY_REFRESH_FOR_ACTIVE_TABLE", {
-          tableId: previousTable.id,
-          reason,
-          previousRealQuantity,
-          incomingRealQuantity,
-        });
-      }
+    logTableSyncDecision(decision, {
+      tableId: previousTable.id,
+      source:
+        reason === "hydrate-remote"
+          ? "hydrate"
+          : reason === "sync-server"
+            ? "polling"
+            : "storage",
+      currentLinesCount: getRealOrderLinesCount(effectiveCurrentLines),
+      incomingLinesCount: getRealOrderLinesCount(incomingTable.orders),
+      currentRevision: effectiveCurrentRevision,
+      incomingRevision: getClientRevisionValue(incomingTable.clientRevision),
+      reason,
+    });
 
-      return {
-        ...incomingTable,
-        orders: previousTable.orders,
-      };
-    }
-
-    return incomingTable;
+    return nextTable;
   };
 
   const protectedIncomingTables = incomingTables.map((incomingTable) => {
@@ -1034,6 +1081,7 @@ export function TableProvider({ children }: { children: ReactNode }) {
         }
 
         const now = getNowIso();
+        const nextClientRevision = getTableClientRevision(table) + 1;
           const updatedTable = {
             ...table,
             ...data,
@@ -1044,6 +1092,7 @@ export function TableProvider({ children }: { children: ReactNode }) {
               : data.operator ?? currentUser.displayName,
           operatorId: currentActor.operatorId,
           updatedAt: now,
+          clientRevision: nextClientRevision,
           updatedByOperatorId: currentActor.operatorId,
         };
 
@@ -1081,7 +1130,18 @@ export function TableProvider({ children }: { children: ReactNode }) {
           });
         }
 
-        console.log("TABLE UPDATED", updatedTable);
+        logTableSyncDecision(
+          { allowed: true, reason: "APPLIED_INCOMING" },
+          {
+            tableId,
+            source: "user_action",
+            currentLinesCount: getRealOrderLinesCount(table.orders),
+            incomingLinesCount: getRealOrderLinesCount(updatedTable.orders),
+            currentRevision: getTableClientRevision(table),
+            incomingRevision: nextClientRevision,
+            reason: "updateTable",
+          }
+        );
         return updatedTable;
       })
     );
@@ -1108,10 +1168,12 @@ export function TableProvider({ children }: { children: ReactNode }) {
             createdByOperatorId: item.createdByOperatorId ?? currentActor.operatorId,
             updatedByOperatorId: currentActor.operatorId,
           }));
+          const nextClientRevision = getTableClientRevision(table) + 1;
 
           debugOrderMutation("setTableOrders", tableId, beforeOrders, normalizedOrders, {
             updatedAt: now,
             tableStatus: table.status,
+            clientRevision: nextClientRevision,
           });
           diffOrderCollections(tableId, table.orders, normalizedOrders);
           const ordersChanged =
@@ -1123,6 +1185,7 @@ export function TableProvider({ children }: { children: ReactNode }) {
             orders: normalizedOrders,
             prebillPrintedAt: ordersChanged ? null : table.prebillPrintedAt ?? null,
             updatedAt: now,
+            clientRevision: nextClientRevision,
             updatedByOperatorId: currentActor.operatorId,
           };
         })
