@@ -6291,65 +6291,7 @@ export function TableOrderScreen({
 
   const renderPaymentControlsPanel = () => {
     const paymentControlsContent = (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[#fffefb]">
-      <div className="shrink-0 border-b border-[#d8d5cc] bg-[#f7f4ee] px-4 py-3">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-sm font-semibold uppercase text-[#5d564e]">Pagamento</div>
-            <div className="mt-1 text-[11px] font-medium text-[#7a736a]">
-              {paymentStep === "calculator"
-                ? "Configura e conferma il pagamento"
-                : "Step 2 di 2 · Conferma"}
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {paymentStep === "confirm" ? (
-              <button
-                type="button"
-                onClick={() => setPaymentStep("calculator")}
-                className="h-9 rounded-[4px] border border-[#d8d5cc] bg-[#fbf8f2] px-3 text-xs font-semibold text-[#2e2a25]"
-              >
-                Indietro al calcolo
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={handleCancelPayment}
-              className="h-9 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-xs font-semibold text-[#2e2a25]"
-            >
-              Torna al tavolo
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        <div className="space-y-4">
-          <div className="rounded-[4px] border border-[#a9c9e6] bg-[#eef7ff] p-3">
-            <div className="text-[11px] font-semibold uppercase text-[#5b6f83]">Totale da pagare</div>
-            <div className="mt-1 text-2xl font-bold text-[#0b3c5d]">{formatEuro(paymentAdjustedTotal)}</div>
-            <div className="mt-3 grid grid-cols-1 gap-2 text-xs text-[#4f6272] sm:grid-cols-2">
-              <div className="rounded-[4px] border border-[#c7d9ea] bg-white px-3 py-2">
-                <div className="uppercase text-[#6e7f8d]">Metodo pagamento</div>
-                <div className="mt-1 font-semibold text-[#0b3c5d]">
-                  {enabledPaymentMethods.find((method) => method.id === paymentMethod)?.label ||
-                    paymentMethod ||
-                    "Contanti"}
-                </div>
-              </div>
-              <div className="rounded-[4px] border border-[#c7d9ea] bg-white px-3 py-2">
-                <div className="uppercase text-[#6e7f8d]">Documento fiscale</div>
-                <div className="mt-1 font-semibold text-[#0b3c5d]">
-                  {documentMode === "FATTURA"
-                    ? "Fattura"
-                    : documentMode === "SCONTRINO_PARLANTE"
-                      ? "Scontrino parlante"
-                      : "Scontrino"}
-                </div>
-              </div>
-            </div>
-          </div>
-
+      <div className="space-y-4">
           <div className="rounded-[4px] border border-[#d8d5cc] bg-[#ffffff] p-3">
             <div className="flex items-center justify-between gap-3">
               <div className="text-xs font-semibold uppercase text-[#5d564e]">Intestatario fattura</div>
@@ -6775,178 +6717,122 @@ export function TableOrderScreen({
               </div>
             ) : null}
           </div>
-        </div>
-      </div>
 
-      <div
-        className="shrink-0 border-t border-[#d8d5cc] bg-[#f7f4ee] px-4 py-3"
-        style={{ paddingBottom: "calc(1rem + env(safe-area-inset-bottom, 0px))" }}
-      >
-        {isQuickDiscountPanelOpen ? (
-          <div className="mb-3 rounded-[4px] border border-[#d8d5cc] bg-[#ffffff] p-3">
-            <div className="text-[11px] font-semibold uppercase text-[#5d564e]">
-              Modifica rapida totale tavolo
-            </div>
-            <div className="mt-3 grid grid-cols-1 gap-2 rounded-[4px] border border-[#d8d5cc] bg-white p-3 text-sm sm:grid-cols-3">
-              <div>
-                <div className="text-[11px] uppercase text-[#6a645b]">Totale iniziale</div>
-                <div className="mt-1 font-bold text-[#2e2a25]">{formatEuro(paymentBaseSubtotal)}</div>
+          {isQuickDiscountPanelOpen ? (
+            <div className="mb-3 rounded-[4px] border border-[#d8d5cc] bg-[#ffffff] p-3">
+              <div className="text-[11px] font-semibold uppercase text-[#5d564e]">
+                Modifica rapida totale tavolo
               </div>
-              <div>
-                <div className="text-[11px] uppercase text-[#6a645b]">Sconto applicato</div>
-                <div className="mt-1 font-bold text-[#8a3434]">
-                  -{formatEuro(appliedQuickDiscount?.amount ?? 0)}
+              <div className="mt-3 grid grid-cols-1 gap-2 rounded-[4px] border border-[#d8d5cc] bg-white p-3 text-sm sm:grid-cols-3">
+                <div>
+                  <div className="text-[11px] uppercase text-[#6a645b]">Totale iniziale</div>
+                  <div className="mt-1 font-bold text-[#2e2a25]">{formatEuro(paymentBaseSubtotal)}</div>
                 </div>
-                <div className="text-[11px] text-[#7b7369]">
-                  {appliedQuickDiscount?.label || "Nessuno"}
+                <div>
+                  <div className="text-[11px] uppercase text-[#6a645b]">Sconto applicato</div>
+                  <div className="mt-1 font-bold text-[#8a3434]">
+                    -{formatEuro(appliedQuickDiscount?.amount ?? 0)}
+                  </div>
+                  <div className="text-[11px] text-[#7b7369]">
+                    {appliedQuickDiscount?.label || "Nessuno"}
+                  </div>
                 </div>
-              </div>
-              <div>
-                <div className="text-[11px] uppercase text-[#6a645b]">Totale finale</div>
-                <div className="mt-1 font-bold text-[#0b3c5d]">
-                  {formatEuro(isQuickDiscountDraftValid ? quickDiscountPreviewTotal : paymentAdjustedTotal)}
+                <div>
+                  <div className="text-[11px] uppercase text-[#6a645b]">Totale finale</div>
+                  <div className="mt-1 font-bold text-[#0b3c5d]">
+                    {formatEuro(isQuickDiscountDraftValid ? quickDiscountPreviewTotal : paymentAdjustedTotal)}
+                  </div>
                 </div>
               </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-6">
+                <button
+                  type="button"
+                  onClick={() => applyQuickDiscount("fixed-discount", 1)}
+                  disabled={!hasPermission("canApplyDiscounts")}
+                  className="h-10 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-sm font-semibold text-[#2e2a25] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  -1 €
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyQuickDiscount("percent-discount", 10)}
+                  disabled={!hasPermission("canApplyDiscounts")}
+                  className="h-10 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-sm font-semibold text-[#2e2a25] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  -10%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyQuickDiscount("percent-discount", 5)}
+                  disabled={!hasPermission("canApplyDiscounts")}
+                  className="h-10 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-sm font-semibold text-[#2e2a25] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  -5%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyQuickDiscount("fixed-discount", 5)}
+                  disabled={!hasPermission("canApplyDiscounts")}
+                  className="h-10 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-sm font-semibold text-[#2e2a25] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  -5 €
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyQuickDiscount("fixed-discount", 8)}
+                  disabled={!hasPermission("canApplyDiscounts")}
+                  className="h-10 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-sm font-semibold text-[#2e2a25] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  -8 €
+                </button>
+                <button
+                  type="button"
+                  onClick={handleResetQuickDiscount}
+                  disabled={!appliedQuickDiscount}
+                  className="h-10 rounded-[4px] border border-[#d8d5cc] bg-[#fbf8f2] px-3 text-sm font-semibold text-[#2e2a25] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Reset sconto
+                </button>
+              </div>
+              <div className="mt-3 grid grid-cols-[minmax(0,1fr)_130px] gap-2">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={quickDiscountValue}
+                  onChange={(event) => setQuickDiscountValue(event.target.value)}
+                  placeholder="Sconto personalizzato"
+                  className="h-10 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-sm outline-none"
+                />
+                <select
+                  value={quickDiscountMode}
+                  onChange={(event) => setQuickDiscountMode(event.target.value as QuickDiscountMode)}
+                  className="h-10 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-sm outline-none"
+                >
+                  <option value="euro">Euro</option>
+                  <option value="percent">Percentuale</option>
+                </select>
+              </div>
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={applyCustomQuickDiscount}
+                  disabled={!hasPermission("canApplyDiscounts") || !isQuickDiscountDraftValid}
+                  className="col-span-2 h-10 rounded-[4px] border border-[#a9c9e6] bg-[#cfe8ff] px-3 text-sm font-semibold text-[#0b3c5d] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Applica
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCancelQuickDiscountPanel}
+                  className="h-10 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-sm font-semibold text-[#2e2a25]"
+                >
+                  Annulla
+                </button>
+              </div>
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-6">
-              <button
-                type="button"
-                onClick={() => applyQuickDiscount("fixed-discount", 1)}
-                disabled={!hasPermission("canApplyDiscounts")}
-                className="h-10 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-sm font-semibold text-[#2e2a25] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                -1 €
-              </button>
-              <button
-                type="button"
-                onClick={() => applyQuickDiscount("percent-discount", 10)}
-                disabled={!hasPermission("canApplyDiscounts")}
-                className="h-10 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-sm font-semibold text-[#2e2a25] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                -10%
-              </button>
-              <button
-                type="button"
-                onClick={() => applyQuickDiscount("percent-discount", 5)}
-                disabled={!hasPermission("canApplyDiscounts")}
-                className="h-10 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-sm font-semibold text-[#2e2a25] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                -5%
-              </button>
-              <button
-                type="button"
-                onClick={() => applyQuickDiscount("fixed-discount", 5)}
-                disabled={!hasPermission("canApplyDiscounts")}
-                className="h-10 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-sm font-semibold text-[#2e2a25] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                -5 €
-              </button>
-              <button
-                type="button"
-                onClick={() => applyQuickDiscount("fixed-discount", 8)}
-                disabled={!hasPermission("canApplyDiscounts")}
-                className="h-10 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-sm font-semibold text-[#2e2a25] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                -8 €
-              </button>
-              <button
-                type="button"
-                onClick={handleResetQuickDiscount}
-                disabled={!appliedQuickDiscount}
-                className="h-10 rounded-[4px] border border-[#d8d5cc] bg-[#fbf8f2] px-3 text-sm font-semibold text-[#2e2a25] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Reset sconto
-              </button>
-            </div>
-            <div className="mt-3 grid grid-cols-[minmax(0,1fr)_130px] gap-2">
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={quickDiscountValue}
-                onChange={(event) => setQuickDiscountValue(event.target.value)}
-                placeholder="Sconto personalizzato"
-                className="h-10 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-sm outline-none"
-              />
-              <select
-                value={quickDiscountMode}
-                onChange={(event) => setQuickDiscountMode(event.target.value as QuickDiscountMode)}
-                className="h-10 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-sm outline-none"
-              >
-                <option value="euro">Euro</option>
-                <option value="percent">Percentuale</option>
-              </select>
-            </div>
-                <div className="mt-3 grid grid-cols-3 gap-2">
-                  <button
-                    type="button"
-                    onClick={handleCancelPayment}
-                    className="h-10 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-sm font-semibold text-[#2e2a25]"
-                  >
-                    Torna al tavolo
-                  </button>
-                  <button
-                    type="button"
-                    onClick={applyCustomQuickDiscount}
-                    disabled={!hasPermission("canApplyDiscounts") || !isQuickDiscountDraftValid}
-                    className="h-10 rounded-[4px] border border-[#a9c9e6] bg-[#cfe8ff] px-3 text-sm font-semibold text-[#0b3c5d] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Applica
-              </button>
-                  <button
-                    type="button"
-                    onClick={handleCancelQuickDiscountPanel}
-                    className="h-10 rounded-[4px] border border-[#d8d5cc] bg-white px-3 text-sm font-semibold text-[#2e2a25]"
-                  >
-                    Annulla
-                  </button>
-              <button
-                type="button"
-                onClick={handleResetQuickDiscount}
-                disabled={!appliedQuickDiscount && !isQuickDiscountDraftValid}
-                className="h-10 rounded-[4px] border border-[#d8d5cc] bg-[#fbf8f2] px-3 text-sm font-semibold text-[#2e2a25] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Reset sconto
-              </button>
-            </div>
-          </div>
-        ) : null}
-        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)] gap-2">
-          <button
-            type="button"
-            onClick={() => setPaymentStep("calculator")}
-            className="h-10 border border-[#c7c1b6] bg-[#ffffff] px-3 text-xs font-semibold text-[#2e2a25]"
-          >
-            INDIETRO
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (!isQuickDiscountPanelOpen) {
-                syncQuickDiscountDraftFromApplied();
-              }
-              setIsQuickDiscountPanelOpen((current) => !current);
-            }}
-            className={[
-              "flex h-10 items-center justify-center border px-2 text-xs font-bold",
-              paymentAdjustments.length > 0
-                ? "border-[#a9c9e6] bg-[#eef7ff] text-[#0b3c5d]"
-                : "border-[#d8d5cc] bg-[#fbf8f2] text-[#2e2a25]",
-            ].join(" ")}
-          >
-            {formatEuro(paymentAdjustedTotal)}
-          </button>
-          <button
-            type="button"
-            onClick={handleConfirmPayment}
-            disabled={!paymentMethod || !canConfirmPayments}
-            className="h-12 border border-[#a9c9e6] bg-[#cfe8ff] px-3 text-sm font-bold text-[#0b3c5d] hover:bg-[#bfe0ff] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            CONFERMA PAGAMENTO
-          </button>
-        </div>
+          ) : null}
       </div>
-    </div>
     );
 
     return (

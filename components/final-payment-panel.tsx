@@ -48,7 +48,7 @@ export function FinalPaymentPanel({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4 pb-8">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4 pb-6">
         <div className="space-y-5">
           <div className="rounded-[4px] border border-[#a9c9e6] bg-[#eef7ff] p-3">
             <div className="text-[11px] font-semibold uppercase text-[#5b6f83]">Totale da pagare</div>
@@ -70,7 +70,7 @@ export function FinalPaymentPanel({
       </div>
 
       <div
-        className="sticky bottom-0 shrink-0 border-t border-[#d8d5cc] bg-[#f7f4ee] px-5 py-4"
+        className="shrink-0 border-t border-[#d8d5cc] bg-[#f7f4ee] px-5 py-4"
         style={{ paddingBottom: "calc(1rem + env(safe-area-inset-bottom, 0px))" }}
       >
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.25fr)]">
