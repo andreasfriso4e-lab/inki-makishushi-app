@@ -110,22 +110,22 @@ export function logTableSyncDecision(
 
   const prefix =
     decision.reason === "APPLIED_INCOMING"
-      ? "[TABLE_SYNC][APPLIED_INCOMING]"
+      ? "[TABLE_SYNC_GUARD] APPLY_INCOMING"
       : decision.reason === "BLOCKED_SHRINKING_INCOMING"
-        ? "[TABLE_SYNC][BLOCKED_SHRINKING_INCOMING]"
+        ? "[TABLE_SYNC_GUARD] BLOCKED_SHRINKING_INCOMING"
       : decision.reason === "DIRTY_DRAFT_PROTECTED"
-        ? "[TABLE_SYNC][DIRTY_DRAFT_PROTECTED]"
+        ? "[TABLE_SYNC_GUARD] DIRTY_DRAFT_PROTECTED"
         : decision.reason === "LOCAL_REVISION_NEWER"
-          ? "[TABLE_SYNC][LOCAL_REVISION_NEWER]"
+          ? "[TABLE_SYNC_GUARD] LOCAL_REVISION_NEWER"
           : decision.reason === "INCOMING_WITHOUT_REVISION"
-            ? "[TABLE_SYNC][LOCAL_REVISION_NEWER]"
+            ? "[TABLE_SYNC_GUARD] LOCAL_REVISION_NEWER"
             : decision.reason === "LOCAL_UPDATED_AT_NEWER"
-              ? "[TABLE_SYNC][LOCAL_REVISION_NEWER]"
+              ? "[TABLE_SYNC_GUARD] LOCAL_REVISION_NEWER"
           : decision.reason === "INTENTIONAL_CLEAR"
-            ? "[TABLE_SYNC][INTENTIONAL_CLEAR]"
+            ? "[TABLE_SYNC_GUARD] INTENTIONAL_CLEAR"
             : decision.reason === "PAYMENT_CLEAR"
-              ? "[TABLE_SYNC][PAYMENT_CLEAR]"
-              : "[TABLE_SYNC][BLOCKED_EMPTY_INCOMING]";
+              ? "[TABLE_SYNC_GUARD] PAYMENT_CLEAR"
+              : "[TABLE_SYNC_GUARD] BLOCKED_EMPTY_INCOMING";
 
   console.info(prefix, {
     tableId,

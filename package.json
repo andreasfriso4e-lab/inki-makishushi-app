@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "sh -c 'PORT=\"${WEB_APP_PORT:-3101}\"; next start --hostname 0.0.0.0 --port \"$PORT\"'",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "rm -f tsconfig.tsbuildinfo && rm -rf .next/types && tsc --noEmit -p tsconfig.json",
     "print-bridge": "node scripts/print-bridge.mjs",
     "verify-production": "node scripts/verify-production.mjs",
     "regression:table-sync": "tsx scripts/table-sync-regression.ts"

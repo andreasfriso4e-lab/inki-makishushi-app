@@ -45,6 +45,15 @@ function buildTable(id: string, orders: OrderItem[], clientRevision: number): Po
   };
 }
 
+function getPendingKitchenLines(items: OrderItem[]) {
+  return items.filter((item) => {
+    const sentQuantity = item.sentQuantity ?? 0;
+    const queuedQuantity = item.queuedQuantity ?? 0;
+    const pendingQuantity = Math.max(item.quantity - Math.max(sentQuantity, queuedQuantity), 0);
+    return pendingQuantity > 0;
+  });
+}
+
 function run() {
   const currentLines = [
     buildOrderItem("line-1", "PRIMA PORTATA"),
@@ -104,6 +113,43 @@ function run() {
     reason: "payment-clear",
   });
   assert(paymentClear.nextLines.length === 0, "Il pagamento completato deve poter liberare l'ordine");
+
+  const savedDraft = [
+    {
+      ...buildOrderItem("line-save-1", "PRIMA PORTATA"),
+      sentQuantity: 0,
+      queuedQuantity: 0,
+    },
+    {
+      ...buildOrderItem("line-save-2", "SECONDA PORTATA"),
+      sentQuantity: 0,
+      queuedQuantity: 0,
+    },
+  ];
+  assert(savedDraft.length === 2, "Il draft iniziale deve contenere due righe");
+  assert(getPendingKitchenLines(savedDraft).length === 2, "Le righe nuove devono risultare inviabili");
+
+  const afterFirstSend = savedDraft.map((item) => ({
+    ...item,
+    sentQuantity: item.quantity,
+    queuedQuantity: 0,
+    status: "sent" as const,
+    printStatus: "sent" as const,
+  }));
+  assert(getPendingKitchenLines(afterFirstSend).length === 0, "Dopo il primo invio non devono restare righe pendenti");
+
+  const withNewLineAfterSave = [
+    ...afterFirstSend,
+    {
+      ...buildOrderItem("line-save-3", "TERZA PORTATA"),
+      sentQuantity: 0,
+      queuedQuantity: 0,
+    },
+  ];
+  assert(
+    getPendingKitchenLines(withNewLineAfterSave).map((item) => item.id).join(",") === "line-save-3",
+    "Il secondo invio deve includere solo la nuova riga"
+  );
 
   console.log("table-sync regression: ok");
 }

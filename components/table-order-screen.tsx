@@ -1040,7 +1040,7 @@ export function TableOrderScreen({
       realOrderLinesCount: snapshotRealLines.length,
     });
     if (isDevelopment) {
-      console.info("[TABLE_SYNC][DRAFT_RECOVERED]", {
+      console.info("[TABLE_SYNC_GUARD] DRAFT_RECOVERED", {
         tableId,
         orderLinesCount: snapshot.orderLines.length,
         currentRevision: getClientRevisionValue(currentTable?.clientRevision),
